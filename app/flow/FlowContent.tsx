@@ -10,6 +10,7 @@ import {
   isInGenrePlaylist, addToGenrePlaylist,
   isInAnyCompilation, addToDefaultCompilation,
 } from '@/lib/saved'
+import { buildInitialStrategies, strategiesFromArtists } from '@/lib/strategies'
 
 const AREAS = [
   'All', 'West Africa', 'North Africa', 'Middle East',
@@ -20,6 +21,8 @@ const AREAS = [
 const MIN_YEAR = 1950
 const MAX_YEAR = 2026
 const SEEN_KEY = 'jamnet_seen'
+const QUEUE_KEY = 'jamnet_queue'
+const BATCH = 4  // strategies per API call
 
 function getSeenIds(): string[] {
   try { return JSON.parse(sessionStorage.getItem(SEEN_KEY) || '[]') } catch { return [] }
@@ -30,6 +33,38 @@ function addSeenIds(ids: string[]) {
     ids.forEach(id => s.add(id))
     sessionStorage.setItem(SEEN_KEY, JSON.stringify([...s]))
   } catch {}
+}
+
+// ── Strategy queue ─────────────────────────────────────────────────────────────
+function getQueue(): string[] {
+  try { return JSON.parse(sessionStorage.getItem(QUEUE_KEY) || '[]') } catch { return [] }
+}
+function setQueue(q: string[]) {
+  try { sessionStorage.setItem(QUEUE_KEY, JSON.stringify(q.slice(0, 600))) } catch {}
+}
+function popBatch(n: number): string[] {
+  const q = getQueue()
+  const batch: string[] = []
+  const remaining: string[] = []
+  let mbCount = 0
+  for (const s of q) {
+    if (batch.length >= n) {
+      remaining.push(s)
+    } else if (s.startsWith('m::')) {
+      // At most 1 MusicBrainz strategy per batch to respect rate limits
+      if (mbCount === 0) { batch.push(s); mbCount++ } else { remaining.push(s) }
+    } else {
+      batch.push(s)
+    }
+  }
+  setQueue(remaining)
+  return batch
+}
+function addToQueue(strats: string[]) {
+  const q = getQueue()
+  const existing = new Set(q)
+  const toAdd = strats.filter(s => !existing.has(s))
+  setQueue([...q, ...toAdd])
 }
 
 function buildFlowUrl(areas: string[], yf: number, yt: number) {
@@ -91,28 +126,42 @@ export default function FlowContent() {
       setLoading(true)
     }
     try {
-      const p = new URLSearchParams()
-      const filtered = a.filter(x => x !== 'All')
-      if (filtered.length > 0) p.set('areas', filtered.join(','))
-      p.set('yearFrom', String(yf))
-      p.set('yearTo', String(yt))
+      let strategies: string[]
 
-      const exclude = append ? getSeenIds().slice(-400) : []
-      if (exclude.length > 0) p.set('exclude', exclude.join(','))
+      if (!append) {
+        // Fresh session: build full strategy queue, take first batch
+        const initial = buildInitialStrategies(a, yf, yt)
+        setQueue(initial.slice(BATCH))
+        strategies = initial.slice(0, BATCH)
+      } else {
+        // Refill queue if running low
+        if (getQueue().length < BATCH * 2) {
+          addToQueue(buildInitialStrategies(a, yf, yt))
+        }
+        strategies = popBatch(BATCH)
 
-      // Pivot: a recently seen artist helps Last.fm find related music
-      if (append && tracksRef.current.length > 0) {
-        const recentTracks = tracksRef.current.slice(Math.max(0, tracksRef.current.length - 10))
-        const pivot = recentTracks[Math.floor(Math.random() * recentTracks.length)].artist
-        p.set('pivot', pivot)
+        // Expand queue with strategies derived from recently discovered artists
+        if (tracksRef.current.length > 0) {
+          const useAll = a.length === 0 || a.includes('All')
+          const region = useAll ? 'World' : a[0]
+          const recentArtists = [...new Set(
+            tracksRef.current.slice(-12).map(t => t.artist)
+          )].slice(0, 4)
+          addToQueue(strategiesFromArtists(recentArtists, region))
+        }
       }
 
-      const res = await fetch(`/api/discover?${p.toString()}`)
+      const exclude = append ? getSeenIds().slice(-500) : []
+
+      const res = await fetch('/api/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ strategies, yearFrom: yf, yearTo: yt, exclude }),
+      })
       const data = await res.json()
       const newTracks: Track[] = data.tracks ?? []
       addSeenIds(newTracks.map(t => t.id))
 
-      // Snapshot save states for new tracks
       const newStates: Record<string, SaveState> = {}
       for (const t of newTracks) newStates[t.id] = getSaveState(t.id)
 

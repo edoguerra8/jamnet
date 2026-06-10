@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { discoverTracks } from '@/lib/discovery'
+import { executeStrategies } from '@/lib/discovery'
 
-export async function GET(req: NextRequest) {
-  const p = req.nextUrl.searchParams
-  const areasParam = p.get('areas') ?? ''
-  const areas = areasParam
-    ? areasParam.split(',').map(a => a.trim()).filter(Boolean)
-    : ['All']
-  const yearFrom = Math.max(1950, Math.min(2026, Number(p.get('yearFrom') ?? 1950)))
-  const yearTo = Math.max(1950, Math.min(2026, Number(p.get('yearTo') ?? 2026)))
-  const excludeParam = p.get('exclude') ?? ''
-  const exclude = excludeParam ? excludeParam.split(',').filter(Boolean) : []
-  const pivot = p.get('pivot') ?? undefined
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json()
+    const strategies: string[] = Array.isArray(body.strategies) ? body.strategies : []
+    const yearFrom = Math.max(1950, Math.min(2026, Number(body.yearFrom ?? 1950)))
+    const yearTo   = Math.max(1950, Math.min(2026, Number(body.yearTo   ?? 2026)))
+    const exclude: string[] = Array.isArray(body.exclude) ? body.exclude : []
 
-  const tracks = await discoverTracks(areas, yearFrom, yearTo, exclude, pivot)
-  return NextResponse.json({ tracks })
+    if (strategies.length === 0) return NextResponse.json({ tracks: [] })
+
+    const tracks = await executeStrategies(strategies, yearFrom, yearTo, exclude)
+    return NextResponse.json({ tracks })
+  } catch {
+    return NextResponse.json({ tracks: [] }, { status: 400 })
+  }
 }
