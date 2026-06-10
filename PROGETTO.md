@@ -40,7 +40,7 @@ Già deciso nel design ma da costruire solo dopo che tutto il resto funziona all
 
 | Tema | Decisione |
 |---|---|
-| Concept | C — Ibrido (barra d'ingresso + flusso immersivo) |
+| Concept | C — Ibrido (filtri geografici/temporali + flusso immersivo). Barra testuale eliminata. |
 | Budget | Apple Developer Program confermato (99$/anno) — pagamento rinviato all'inizio della Fase 3: le Fasi 1-2 sono interamente gratuite (anteprime via iTunes Search API). Verificato: non esiste prova gratuita o sandbox per MusicKit |
 | Dominio | Nessuno per ora: indirizzo gratuito .vercel.app |
 | Tema visivo | Automatico col sistema (chiaro/scuro), stile Claude |
@@ -49,6 +49,11 @@ Già deciso nel design ma da costruire solo dopo che tutto il resto funziona all
 | Computer di lavoro | Mac |
 | Popolarità | Nessuna distinzione visibile popolare/oscuro; pescaggio deliberato in profondità di catalogo |
 | Salvataggio | Tocco singolo → playlist attiva; tocco lungo → scelta/creazione playlist |
+| Home | Chip area geografica (multi-select) + range slider 1950–2026 + pulsante play grande. Nessuna barra testuale. |
+| Flusso — luogo | Tocco sul luogo del brano → filtra per quell'area geografica |
+| Flusso — anno | Tocco sull'anno → centra il range sul decennio |
+| Bussola | Il pannello mostra chip geografici + slider temporale (non più testo libero) |
+| Anti-ripetizione | ID brani visti salvati in sessionStorage; esclusi dalle fetch successive per tutta la sessione |
 | Social | Rimandato a dopo l'MVP completo |
 | Nome del sito | **JamNet** |
 | Metafora guida | La bussola: icona-firma, ago che oscilla durante la ricerca e si assesta sulla direzione trovata |

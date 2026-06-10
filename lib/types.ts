@@ -7,4 +7,5 @@ export interface Track {
   previewUrl: string | null
   year: number
   genre: string
+  region: string
 }

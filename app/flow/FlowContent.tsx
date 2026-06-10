@@ -4,13 +4,49 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/CompassIcon'
 import HeartButton from '@/components/HeartButton'
+import RangeSlider from '@/components/RangeSlider'
 import { Track } from '@/lib/types'
-import { toggleSaved, isSaved } from '@/lib/saved'
+import { toggleSaved } from '@/lib/saved'
+
+const AREAS = [
+  'All', 'West Africa', 'North Africa', 'Middle East',
+  'South Asia', 'East Asia', 'Southeast Asia',
+  'Latin America', 'Caribbean', 'Europe', 'North America', 'Oceania',
+]
+
+const MIN_YEAR = 1950
+const MAX_YEAR = 2026
+const SEEN_KEY = 'jamnet_seen'
+
+function getSeenIds(): string[] {
+  try { return JSON.parse(sessionStorage.getItem(SEEN_KEY) || '[]') } catch { return [] }
+}
+function addSeenIds(ids: string[]) {
+  try {
+    const s = new Set(getSeenIds())
+    ids.forEach(id => s.add(id))
+    sessionStorage.setItem(SEEN_KEY, JSON.stringify([...s]))
+  } catch {}
+}
+
+function buildFlowUrl(areas: string[], yf: number, yt: number) {
+  const p = new URLSearchParams()
+  const filtered = areas.filter(a => a !== 'All')
+  if (filtered.length > 0) p.set('areas', filtered.join(','))
+  if (yf !== MIN_YEAR) p.set('yearFrom', String(yf))
+  if (yt !== MAX_YEAR) p.set('yearTo', String(yt))
+  const str = p.toString()
+  return `/flow${str ? `?${str}` : ''}`
+}
 
 export default function FlowContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const query = searchParams.get('q') ?? ''
+
+  const areasParam = searchParams.get('areas') ?? ''
+  const areas = areasParam ? areasParam.split(',').map(a => a.trim()).filter(Boolean) : ['All']
+  const yearFrom = Math.max(MIN_YEAR, Math.min(MAX_YEAR, Number(searchParams.get('yearFrom') ?? MIN_YEAR)))
+  const yearTo = Math.max(MIN_YEAR, Math.min(MAX_YEAR, Number(searchParams.get('yearTo') ?? MAX_YEAR)))
 
   const [tracks, setTracks] = useState<Track[]>([])
   const [index, setIndex] = useState(0)
@@ -19,15 +55,27 @@ export default function FlowContent() {
   const [hasInteracted, setHasInteracted] = useState(false)
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
   const [panelOpen, setPanelOpen] = useState(false)
-  const [newQuery, setNewQuery] = useState('')
+  const [panelAreas, setPanelAreas] = useState<string[]>(areas)
+  const [panelYearFrom, setPanelYearFrom] = useState(yearFrom)
+  const [panelYearTo, setPanelYearTo] = useState(yearTo)
 
   const audioRef = useRef<HTMLAudioElement>(null)
-  const queryRef = useRef(query)
   const fetchingMoreRef = useRef(false)
+  const areasRef = useRef(areas)
+  const yearFromRef = useRef(yearFrom)
+  const yearToRef = useRef(yearTo)
+
+  useEffect(() => {
+    areasRef.current = areas
+    yearFromRef.current = yearFrom
+    yearToRef.current = yearTo
+  })
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
-  const fetchTracks = useCallback(async (q: string, append = false) => {
+  const fetchTracks = useCallback(async (
+    a: string[], yf: number, yt: number, append = false
+  ) => {
     if (append) {
       if (fetchingMoreRef.current) return
       fetchingMoreRef.current = true
@@ -35,18 +83,27 @@ export default function FlowContent() {
     } else {
       setLoading(true)
     }
-
     try {
-      const res = await fetch(`/api/discover?q=${encodeURIComponent(q)}`)
+      const p = new URLSearchParams()
+      const filtered = a.filter(x => x !== 'All')
+      if (filtered.length > 0) p.set('areas', filtered.join(','))
+      p.set('yearFrom', String(yf))
+      p.set('yearTo', String(yt))
+      const exclude = append ? getSeenIds().slice(-300) : []
+      if (exclude.length > 0) p.set('exclude', exclude.join(','))
+
+      const res = await fetch(`/api/discover?${p.toString()}`)
       const data = await res.json()
+      const newTracks: Track[] = data.tracks ?? []
+      addSeenIds(newTracks.map(t => t.id))
       if (append) {
-        setTracks(prev => [...prev, ...data.tracks])
+        setTracks(prev => [...prev, ...newTracks])
       } else {
-        setTracks(data.tracks)
+        setTracks(newTracks)
         setIndex(0)
       }
     } catch {
-      // silent — already showing whatever we have
+      // silent
     } finally {
       setLoading(false)
       setFetchingMore(false)
@@ -55,11 +112,10 @@ export default function FlowContent() {
   }, [])
 
   useEffect(() => {
-    queryRef.current = query
-    fetchTracks(query)
-  }, [query, fetchTracks])
+    fetchTracks(areas, yearFrom, yearTo, false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
-  // Load saved IDs from localStorage on mount
   useEffect(() => {
     const saved = new Set(
       (JSON.parse(localStorage.getItem('jamnet_saved') || '[]') as Track[]).map(t => t.id)
@@ -67,23 +123,26 @@ export default function FlowContent() {
     setSavedIds(saved)
   }, [])
 
+  useEffect(() => {
+    if (panelOpen) {
+      setPanelAreas(areasRef.current)
+      setPanelYearFrom(yearFromRef.current)
+      setPanelYearTo(yearToRef.current)
+    }
+  }, [panelOpen])
+
   // ── Current track ──────────────────────────────────────────────────────────
 
   const current = tracks[index]
 
-  // Play track and prefetch more when running low
   useEffect(() => {
     if (!current?.previewUrl) return
-
     if (audioRef.current) {
       audioRef.current.src = current.previewUrl
-      if (hasInteracted) {
-        audioRef.current.play().catch(() => {})
-      }
+      if (hasInteracted) audioRef.current.play().catch(() => {})
     }
-
     if (index >= tracks.length - 4) {
-      fetchTracks(queryRef.current, true)
+      fetchTracks(areasRef.current, yearFromRef.current, yearToRef.current, true)
     }
   }, [index, current, hasInteracted, tracks.length, fetchTracks])
 
@@ -113,12 +172,30 @@ export default function FlowContent() {
     if (info.offset.y < -60 || info.velocity.y < -400) nextTrack()
   }
 
-  const reorient = (q: string) => router.push(`/flow?q=${encodeURIComponent(q)}`)
+  const handleRegionTap = (region: string) => {
+    router.push(buildFlowUrl([region], yearFrom, yearTo))
+  }
 
-  const handleNewDirection = () => {
-    if (!newQuery.trim()) return
+  const handleYearTap = (year: number) => {
+    const decade = Math.floor(year / 10) * 10
+    router.push(buildFlowUrl(areas, decade, Math.min(decade + 9, MAX_YEAR)))
+  }
+
+  const togglePanelArea = (area: string) => {
+    if (area === 'All') { setPanelAreas(['All']); return }
+    setPanelAreas(prev => {
+      const withoutAll = prev.filter(a => a !== 'All')
+      if (withoutAll.includes(area)) {
+        const next = withoutAll.filter(a => a !== area)
+        return next.length === 0 ? ['All'] : next
+      }
+      return [...withoutAll, area]
+    })
+  }
+
+  const handleApplyDirection = () => {
     setPanelOpen(false)
-    router.push(`/flow?q=${encodeURIComponent(newQuery.trim())}`)
+    router.push(buildFlowUrl(panelAreas, panelYearFrom, panelYearTo))
   }
 
   // ── Loading / empty states ─────────────────────────────────────────────────
@@ -147,6 +224,8 @@ export default function FlowContent() {
     )
   }
 
+  const isPanelAllYears = panelYearFrom === MIN_YEAR && panelYearTo === MAX_YEAR
+
   // ── Main render ────────────────────────────────────────────────────────────
 
   return (
@@ -174,7 +253,6 @@ export default function FlowContent() {
 
         {/* Track content */}
         <div className="h-full flex flex-col items-center justify-between px-6 pt-20 pb-10 pb-safe">
-
           <AnimatePresence mode="wait">
             <motion.div
               key={current.id}
@@ -206,22 +284,19 @@ export default function FlowContent() {
                 <h1 className="font-serif text-[1.6rem] leading-tight">
                   {current.title}
                 </h1>
-                <button
-                  onClick={(e) => { e.stopPropagation(); reorient(current.artist) }}
-                  className="text-left text-base font-sans opacity-65 hover:text-terracotta hover:opacity-100 transition-all w-fit"
-                >
+                <span className="text-base font-sans opacity-65">
                   {current.artist}
-                </button>
+                </span>
                 <div className="flex items-center gap-2 text-[13px] font-sans text-muted">
                   <button
-                    onClick={(e) => { e.stopPropagation(); reorient(current.genre) }}
+                    onClick={(e) => { e.stopPropagation(); handleRegionTap(current.region) }}
                     className="hover:text-terracotta transition-colors"
                   >
-                    {current.genre}
+                    {current.region !== 'All' ? current.region : current.genre}
                   </button>
                   <span className="opacity-40">·</span>
                   <button
-                    onClick={(e) => { e.stopPropagation(); reorient(String(current.year)) }}
+                    onClick={(e) => { e.stopPropagation(); handleYearTap(current.year) }}
                     className="hover:text-terracotta transition-colors"
                   >
                     {current.year}
@@ -253,8 +328,6 @@ export default function FlowContent() {
               onToggle={handleToggleSave}
               size={28}
             />
-
-            {/* Compass — opens direction panel */}
             <button
               onClick={(e) => { e.stopPropagation(); setPanelOpen(true) }}
               className="flex items-center justify-center p-2 -m-2 group"
@@ -297,13 +370,10 @@ export default function FlowContent() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
           >
-            {/* Backdrop */}
             <div
               className="absolute inset-0 bg-ink/20 dark:bg-black/50 backdrop-blur-sm"
               onClick={() => setPanelOpen(false)}
             />
-
-            {/* Sheet */}
             <motion.div
               className="relative bg-ivory dark:bg-dark-surface rounded-t-2xl px-6 pt-8 pb-10 pb-safe"
               initial={{ y: '100%' }}
@@ -318,15 +388,40 @@ export default function FlowContent() {
                   <span className="text-sm font-sans text-muted">New direction</span>
                 </div>
 
-                <input
-                  type="text"
-                  value={newQuery}
-                  onChange={(e) => setNewQuery(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleNewDirection()}
-                  placeholder="Where to?"
-                  className="w-full px-0 py-2 text-xl font-serif bg-transparent border-b border-ink/20 dark:border-ivory/20 focus:outline-none focus:border-terracotta placeholder:text-muted/40 transition-colors"
-                  autoFocus
-                />
+                {/* Area chips */}
+                <div className="flex flex-col gap-2">
+                  <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Area</span>
+                  <div className="flex flex-wrap gap-2">
+                    {AREAS.map(area => (
+                      <button
+                        key={area}
+                        onClick={() => togglePanelArea(area)}
+                        className={`px-3 py-1.5 rounded-full text-[13px] font-sans border transition-all ${
+                          panelAreas.includes(area)
+                            ? 'bg-terracotta border-terracotta text-ivory'
+                            : 'border-ink/20 dark:border-ivory/20 text-muted hover:border-terracotta hover:text-terracotta'
+                        }`}
+                      >
+                        {area}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Year slider */}
+                <div className="flex flex-col gap-3">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Period</span>
+                    <span className="text-sm font-sans text-muted tabular-nums">
+                      {isPanelAllYears ? 'All years' : `${panelYearFrom} – ${panelYearTo}`}
+                    </span>
+                  </div>
+                  <RangeSlider
+                    min={MIN_YEAR} max={MAX_YEAR}
+                    from={panelYearFrom} to={panelYearTo}
+                    onChange={(f, t) => { setPanelYearFrom(f); setPanelYearTo(t) }}
+                  />
+                </div>
 
                 <div className="flex justify-between items-center">
                   <button
@@ -336,9 +431,8 @@ export default function FlowContent() {
                     Back to home
                   </button>
                   <button
-                    onClick={handleNewDirection}
-                    disabled={!newQuery.trim()}
-                    className="px-5 py-2 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity disabled:opacity-30"
+                    onClick={handleApplyDirection}
+                    className="px-5 py-2 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity"
                   >
                     Go
                   </button>
