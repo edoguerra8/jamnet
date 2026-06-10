@@ -8,4 +8,12 @@ export interface Track {
   year: number
   genre: string
   region: string
+  macroGenre: string
+}
+
+export interface Compilation {
+  id: string
+  name: string
+  tracks: Track[]
+  createdAt: number
 }

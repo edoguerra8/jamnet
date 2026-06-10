@@ -51,6 +51,22 @@ export default function Home() {
         <span className="font-serif text-lg tracking-tight opacity-90">JamNet</span>
       </div>
 
+      {/* Library link */}
+      <div className="absolute top-6 right-6 pt-safe">
+        <button
+          onClick={() => router.push('/library')}
+          className="opacity-40 hover:opacity-100 transition-opacity"
+          aria-label="Library"
+        >
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <path d="M4 19V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13" strokeLinecap="round" />
+            <path d="M4 19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2" />
+            <line x1="9" y1="8" x2="15" y2="8" strokeLinecap="round" />
+            <line x1="9" y1="12" x2="13" y2="12" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+
       <div className="w-full max-w-sm flex flex-col gap-10">
         {/* Geographic area chips */}
         <div className="flex flex-col gap-3">

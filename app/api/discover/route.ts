@@ -11,7 +11,8 @@ export async function GET(req: NextRequest) {
   const yearTo = Math.max(1950, Math.min(2026, Number(p.get('yearTo') ?? 2026)))
   const excludeParam = p.get('exclude') ?? ''
   const exclude = excludeParam ? excludeParam.split(',').filter(Boolean) : []
+  const pivot = p.get('pivot') ?? undefined
 
-  const tracks = await discoverTracks(areas, yearFrom, yearTo, exclude)
+  const tracks = await discoverTracks(areas, yearFrom, yearTo, exclude, pivot)
   return NextResponse.json({ tracks })
 }

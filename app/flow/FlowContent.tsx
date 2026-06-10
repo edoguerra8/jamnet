@@ -3,10 +3,13 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/CompassIcon'
-import HeartButton from '@/components/HeartButton'
+import HeartButton, { SaveState } from '@/components/HeartButton'
 import RangeSlider from '@/components/RangeSlider'
 import { Track } from '@/lib/types'
-import { toggleSaved } from '@/lib/saved'
+import {
+  isInGenrePlaylist, addToGenrePlaylist,
+  isInAnyCompilation, addToDefaultCompilation,
+} from '@/lib/saved'
 
 const AREAS = [
   'All', 'West Africa', 'North Africa', 'Middle East',
@@ -39,6 +42,12 @@ function buildFlowUrl(areas: string[], yf: number, yt: number) {
   return `/flow${str ? `?${str}` : ''}`
 }
 
+function getSaveState(id: string): SaveState {
+  if (!isInGenrePlaylist(id)) return 'none'
+  if (isInAnyCompilation(id)) return 'both'
+  return 'genre'
+}
+
 export default function FlowContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -53,7 +62,7 @@ export default function FlowContent() {
   const [loading, setLoading] = useState(true)
   const [fetchingMore, setFetchingMore] = useState(false)
   const [hasInteracted, setHasInteracted] = useState(false)
-  const [savedIds, setSavedIds] = useState<Set<string>>(new Set())
+  const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({})
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelAreas, setPanelAreas] = useState<string[]>(areas)
   const [panelYearFrom, setPanelYearFrom] = useState(yearFrom)
@@ -64,12 +73,10 @@ export default function FlowContent() {
   const areasRef = useRef(areas)
   const yearFromRef = useRef(yearFrom)
   const yearToRef = useRef(yearTo)
+  const tracksRef = useRef(tracks)
 
-  useEffect(() => {
-    areasRef.current = areas
-    yearFromRef.current = yearFrom
-    yearToRef.current = yearTo
-  })
+  useEffect(() => { areasRef.current = areas; yearFromRef.current = yearFrom; yearToRef.current = yearTo })
+  useEffect(() => { tracksRef.current = tracks }, [tracks])
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
 
@@ -89,18 +96,33 @@ export default function FlowContent() {
       if (filtered.length > 0) p.set('areas', filtered.join(','))
       p.set('yearFrom', String(yf))
       p.set('yearTo', String(yt))
-      const exclude = append ? getSeenIds().slice(-300) : []
+
+      const exclude = append ? getSeenIds().slice(-400) : []
       if (exclude.length > 0) p.set('exclude', exclude.join(','))
+
+      // Pivot: a recently seen artist helps Last.fm find related music
+      if (append && tracksRef.current.length > 0) {
+        const recentTracks = tracksRef.current.slice(Math.max(0, tracksRef.current.length - 10))
+        const pivot = recentTracks[Math.floor(Math.random() * recentTracks.length)].artist
+        p.set('pivot', pivot)
+      }
 
       const res = await fetch(`/api/discover?${p.toString()}`)
       const data = await res.json()
       const newTracks: Track[] = data.tracks ?? []
       addSeenIds(newTracks.map(t => t.id))
+
+      // Snapshot save states for new tracks
+      const newStates: Record<string, SaveState> = {}
+      for (const t of newTracks) newStates[t.id] = getSaveState(t.id)
+
       if (append) {
         setTracks(prev => [...prev, ...newTracks])
+        setSaveStates(prev => ({ ...prev, ...newStates }))
       } else {
         setTracks(newTracks)
         setIndex(0)
+        setSaveStates(newStates)
       }
     } catch {
       // silent
@@ -111,17 +133,8 @@ export default function FlowContent() {
     }
   }, [])
 
-  useEffect(() => {
-    fetchTracks(areas, yearFrom, yearTo, false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams])
-
-  useEffect(() => {
-    const saved = new Set(
-      (JSON.parse(localStorage.getItem('jamnet_saved') || '[]') as Track[]).map(t => t.id)
-    )
-    setSavedIds(saved)
-  }, [])
+  useEffect(() => { fetchTracks(areas, yearFrom, yearTo, false) }, [searchParams])
 
   useEffect(() => {
     if (panelOpen) {
@@ -131,7 +144,7 @@ export default function FlowContent() {
     }
   }, [panelOpen])
 
-  // ── Current track ──────────────────────────────────────────────────────────
+  // ── Audio ──────────────────────────────────────────────────────────────────
 
   const current = tracks[index]
 
@@ -158,14 +171,16 @@ export default function FlowContent() {
     audioRef.current.play().catch(() => {})
   }
 
-  const handleToggleSave = () => {
+  const handleSaveToGenre = () => {
     if (!current) return
-    const nowSaved = toggleSaved(current)
-    setSavedIds(prev => {
-      const next = new Set(prev)
-      nowSaved ? next.add(current.id) : next.delete(current.id)
-      return next
-    })
+    addToGenrePlaylist(current)
+    setSaveStates(prev => ({ ...prev, [current.id]: 'genre' }))
+  }
+
+  const handleSaveToCompilation = () => {
+    if (!current) return
+    addToDefaultCompilation(current)
+    setSaveStates(prev => ({ ...prev, [current.id]: 'both' }))
   }
 
   const handleDragEnd = (_: unknown, info: { offset: { y: number }; velocity: { y: number } }) => {
@@ -193,12 +208,7 @@ export default function FlowContent() {
     })
   }
 
-  const handleApplyDirection = () => {
-    setPanelOpen(false)
-    router.push(buildFlowUrl(panelAreas, panelYearFrom, panelYearTo))
-  }
-
-  // ── Loading / empty states ─────────────────────────────────────────────────
+  // ── Loading / empty ────────────────────────────────────────────────────────
 
   if (loading && tracks.length === 0) {
     return (
@@ -214,10 +224,7 @@ export default function FlowContent() {
       <div className="h-dvh flex flex-col items-center justify-center bg-ivory dark:bg-dark-bg gap-6 px-8 text-center">
         <CompassIcon size={36} className="text-muted" />
         <p className="font-sans text-muted text-sm">Nothing found. Try a different direction.</p>
-        <button
-          onClick={() => router.push('/')}
-          className="text-sm font-sans text-terracotta underline underline-offset-4"
-        >
+        <button onClick={() => router.push('/')} className="text-sm font-sans text-terracotta underline underline-offset-4">
           Back to home
         </button>
       </div>
@@ -225,6 +232,7 @@ export default function FlowContent() {
   }
 
   const isPanelAllYears = panelYearFrom === MIN_YEAR && panelYearTo === MAX_YEAR
+  const currentSaveState = saveStates[current.id] ?? 'none'
 
   // ── Main render ────────────────────────────────────────────────────────────
 
@@ -249,6 +257,18 @@ export default function FlowContent() {
           >
             JamNet
           </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); router.push('/library') }}
+            className="opacity-40 hover:opacity-100 transition-opacity"
+            aria-label="Library"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M4 19V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13" strokeLinecap="round" />
+              <path d="M4 19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2" />
+              <line x1="9" y1="8" x2="15" y2="8" strokeLinecap="round" />
+              <line x1="9" y1="12" x2="13" y2="12" strokeLinecap="round" />
+            </svg>
+          </button>
         </div>
 
         {/* Track content */}
@@ -266,12 +286,7 @@ export default function FlowContent() {
               <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden shadow-md bg-parchment dark:bg-dark-surface">
                 {current.artworkUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={current.artworkUrl}
-                    alt=""
-                    className="w-full h-full object-cover"
-                    draggable={false}
-                  />
+                  <img src={current.artworkUrl} alt="" className="w-full h-full object-cover" draggable={false} />
                 ) : (
                   <div className="w-full h-full flex items-center justify-center">
                     <CompassIcon size={48} className="text-muted/40" />
@@ -281,12 +296,8 @@ export default function FlowContent() {
 
               {/* Track info */}
               <div className="w-full max-w-xs flex flex-col gap-1">
-                <h1 className="font-serif text-[1.6rem] leading-tight">
-                  {current.title}
-                </h1>
-                <span className="text-base font-sans opacity-65">
-                  {current.artist}
-                </span>
+                <h1 className="font-serif text-[1.6rem] leading-tight">{current.title}</h1>
+                <span className="text-base font-sans opacity-65">{current.artist}</span>
                 <div className="flex items-center gap-2 text-[13px] font-sans text-muted">
                   <button
                     onClick={(e) => { e.stopPropagation(); handleRegionTap(current.region) }}
@@ -306,14 +317,11 @@ export default function FlowContent() {
             </motion.div>
           </AnimatePresence>
 
-          {/* Tap-to-play hint */}
           <AnimatePresence>
             {!hasInteracted && (
               <motion.p
                 className="absolute bottom-32 text-xs font-sans text-muted pointer-events-none"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 0.7 }}
-                exit={{ opacity: 0 }}
+                initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} exit={{ opacity: 0 }}
                 transition={{ delay: 0.6 }}
               >
                 Tap to play
@@ -324,8 +332,9 @@ export default function FlowContent() {
           {/* Bottom controls */}
           <div className="w-full max-w-xs flex justify-between items-center">
             <HeartButton
-              saved={savedIds.has(current.id)}
-              onToggle={handleToggleSave}
+              saveState={currentSaveState}
+              onSaveToGenre={handleSaveToGenre}
+              onSaveToCompilation={handleSaveToCompilation}
               size={28}
             />
             <button
@@ -334,22 +343,18 @@ export default function FlowContent() {
               aria-label="Change direction"
             >
               <CompassIcon
-                spinning={fetchingMore}
-                size={28}
+                spinning={fetchingMore} size={28}
                 className="text-ink dark:text-ivory opacity-50 group-hover:opacity-100 group-hover:text-terracotta transition-all"
               />
             </button>
           </div>
         </div>
 
-        {/* Swipe hint (first track only) */}
         <AnimatePresence>
           {hasInteracted && index === 0 && (
             <motion.div
               className="absolute bottom-20 inset-x-0 flex justify-center pointer-events-none"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 0.4, y: 0 }}
-              exit={{ opacity: 0 }}
+              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 0.4, y: 0 }} exit={{ opacity: 0 }}
               transition={{ delay: 2, duration: 0.5 }}
             >
               <svg viewBox="0 0 16 20" width="14" height="18" fill="currentColor" className="text-muted">
@@ -366,19 +371,12 @@ export default function FlowContent() {
         {panelOpen && (
           <motion.div
             className="fixed inset-0 z-50 flex flex-col justify-end"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
-            <div
-              className="absolute inset-0 bg-ink/20 dark:bg-black/50 backdrop-blur-sm"
-              onClick={() => setPanelOpen(false)}
-            />
+            <div className="absolute inset-0 bg-ink/20 dark:bg-black/50 backdrop-blur-sm" onClick={() => setPanelOpen(false)} />
             <motion.div
               className="relative bg-ivory dark:bg-dark-surface rounded-t-2xl px-6 pt-8 pb-10 pb-safe"
-              initial={{ y: '100%' }}
-              animate={{ y: 0 }}
-              exit={{ y: '100%' }}
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
               onClick={(e) => e.stopPropagation()}
             >
@@ -387,8 +385,6 @@ export default function FlowContent() {
                   <CompassIcon size={20} className="text-terracotta" />
                   <span className="text-sm font-sans text-muted">New direction</span>
                 </div>
-
-                {/* Area chips */}
                 <div className="flex flex-col gap-2">
                   <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Area</span>
                   <div className="flex flex-wrap gap-2">
@@ -407,8 +403,6 @@ export default function FlowContent() {
                     ))}
                   </div>
                 </div>
-
-                {/* Year slider */}
                 <div className="flex flex-col gap-3">
                   <div className="flex justify-between items-center">
                     <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Period</span>
@@ -422,16 +416,12 @@ export default function FlowContent() {
                     onChange={(f, t) => { setPanelYearFrom(f); setPanelYearTo(t) }}
                   />
                 </div>
-
                 <div className="flex justify-between items-center">
-                  <button
-                    onClick={() => router.push('/')}
-                    className="text-sm font-sans text-muted hover:text-terracotta transition-colors"
-                  >
+                  <button onClick={() => router.push('/')} className="text-sm font-sans text-muted hover:text-terracotta transition-colors">
                     Back to home
                   </button>
                   <button
-                    onClick={handleApplyDirection}
+                    onClick={() => { setPanelOpen(false); router.push(buildFlowUrl(panelAreas, panelYearFrom, panelYearTo)) }}
                     className="px-5 py-2 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity"
                   >
                     Go
