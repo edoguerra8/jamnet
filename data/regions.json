@@ -1,0 +1,198 @@
+{
+  "_comment": "Mappa completa: OGNI paese ISO 3166-1 alfa-2 è assegnato a una macro-area. Tutte le 11 aree corrispondono a quelle del frontend. Nessun paese escluso. I 'musicbrainz_countries' sono i nomi esatti per le query MusicBrainz (seed primari dello script). I 'genre_seeds' guidano la scoperta tematica.",
+
+  "West Africa": {
+    "countries": [
+      "AO", "BJ", "BF", "BI", "CM", "CF", "TD", "CG", "CD", "CI",
+      "CV", "DJ", "ER", "ET", "GQ", "GA", "GM", "GH", "GN", "GW",
+      "KE", "LR", "MG", "MW", "ML", "MU", "MZ", "NA", "NE", "NG",
+      "RW", "ST", "SC", "SL", "SO", "SS", "SN", "SH", "SZ", "TZ",
+      "TG", "UG", "ZM", "ZW", "BW", "LS", "IO", "TF", "YT", "RE",
+      "KM", "MR"
+    ],
+    "musicbrainz_countries": [
+      "Nigeria", "Ghana", "Senegal", "Mali", "Guinea", "Ivory Coast",
+      "Burkina Faso", "Togo", "Benin", "Sierra Leone", "Liberia",
+      "Cape Verde", "Gambia", "Guinea-Bissau", "Niger",
+      "Kenya", "Ethiopia", "Tanzania", "Uganda", "Rwanda",
+      "Angola", "Cameroon", "Democratic Republic of the Congo",
+      "Republic of the Congo", "Mozambique", "Madagascar", "Zimbabwe",
+      "Zambia", "Somalia", "Eritrea", "Malawi", "Namibia", "Gabon",
+      "South Africa", "Botswana", "Mauritius", "Comoros", "Mauritania"
+    ],
+    "genre_seeds": [
+      "afrobeat", "highlife", "mbalax", "juju music", "wassoulou",
+      "afropop", "Ethiopian jazz", "Congolese rumba", "taarab",
+      "benga", "soukous", "palm wine music", "isicathamiya", "mbaqanga"
+    ]
+  },
+
+  "North Africa": {
+    "countries": [
+      "DZ", "EG", "LY", "MA", "SD", "TN", "EH"
+    ],
+    "musicbrainz_countries": [
+      "Morocco", "Egypt", "Algeria", "Tunisia", "Libya", "Sudan"
+    ],
+    "genre_seeds": [
+      "gnawa", "rai", "chaabi", "malouf", "sha'bi",
+      "andalusian classical", "tarab", "amazigh folk", "nubian music"
+    ]
+  },
+
+  "Middle East": {
+    "countries": [
+      "AE", "AM", "AZ", "BH", "CY", "GE", "IQ", "IL", "IR", "JO",
+      "KW", "KZ", "KG", "LB", "OM", "PS", "QA", "SA", "SY", "TJ",
+      "TM", "TR", "UZ", "YE"
+    ],
+    "musicbrainz_countries": [
+      "Turkey", "Lebanon", "Iran", "Iraq", "Syria", "Israel", "Jordan",
+      "Saudi Arabia", "Yemen", "Armenia", "Georgia", "Azerbaijan",
+      "Kuwait", "Bahrain", "Qatar", "United Arab Emirates", "Oman",
+      "Cyprus", "Kazakhstan", "Kyrgyzstan", "Tajikistan",
+      "Turkmenistan", "Uzbekistan"
+    ],
+    "genre_seeds": [
+      "maqam", "arabesque", "Persian classical", "khaleeji", "Kurdish folk",
+      "Anatolian folk", "Armenian duduk", "Georgian polyphony",
+      "shashmacom", "mugham", "dombyra", "Central Asian folk"
+    ]
+  },
+
+  "South Asia": {
+    "countries": [
+      "AF", "BD", "BT", "IN", "MV", "NP", "LK", "PK"
+    ],
+    "musicbrainz_countries": [
+      "India", "Pakistan", "Bangladesh", "Sri Lanka", "Nepal",
+      "Afghanistan", "Maldives", "Bhutan"
+    ],
+    "genre_seeds": [
+      "Hindustani classical", "Carnatic classical", "qawwali", "bhajan", "baul",
+      "ghazal", "bhangra", "Rajasthani folk", "Sufi music", "filmi"
+    ]
+  },
+
+  "East Asia": {
+    "countries": [
+      "CN", "HK", "JP", "KP", "KR", "MN", "MO", "TW"
+    ],
+    "musicbrainz_countries": [
+      "Japan", "South Korea", "China", "Taiwan", "Mongolia",
+      "Hong Kong"
+    ],
+    "genre_seeds": [
+      "enka", "kayokyoku", "pansori", "guqin", "erhu",
+      "gagaku", "throat singing", "Peking opera", "minyo", "huangmeixi"
+    ]
+  },
+
+  "Southeast Asia": {
+    "countries": [
+      "BN", "KH", "TL", "ID", "LA", "MY", "MM", "PH", "SG", "TH", "VN"
+    ],
+    "musicbrainz_countries": [
+      "Indonesia", "Thailand", "Vietnam", "Philippines", "Cambodia",
+      "Myanmar", "Malaysia", "Singapore", "Laos", "East Timor"
+    ],
+    "genre_seeds": [
+      "gamelan", "kroncong", "luk thung", "nhac vang", "pinpeat",
+      "kulintang", "mor lam", "dangdut", "OPM", "Khmer classical"
+    ]
+  },
+
+  "Latin America": {
+    "countries": [
+      "AR", "BO", "BR", "BZ", "CL", "CO", "CR", "EC", "SV", "FK",
+      "GF", "GT", "GY", "HN", "MX", "NI", "PA", "PE", "PY", "SR",
+      "UY", "VE"
+    ],
+    "musicbrainz_countries": [
+      "Brazil", "Colombia", "Argentina", "Mexico", "Peru", "Chile",
+      "Venezuela", "Ecuador", "Bolivia", "Paraguay", "Uruguay",
+      "Guatemala", "Honduras", "Costa Rica", "El Salvador", "Nicaragua",
+      "Panama", "Guyana", "Suriname", "Belize"
+    ],
+    "genre_seeds": [
+      "bossa nova", "samba", "tango", "cumbia", "vallenato",
+      "nueva cancion", "huayno", "joropo", "tropicalia", "MPB",
+      "forró", "son jarocho", "Andean folk", "criolla"
+    ]
+  },
+
+  "Caribbean": {
+    "countries": [
+      "AG", "AI", "AN", "AW", "BB", "BL", "BQ", "BS", "CU", "CW",
+      "DM", "DO", "GD", "GP", "HT", "JM", "KN", "KY", "LC", "MF",
+      "MQ", "MS", "PR", "SX", "TC", "TT", "VC", "VG", "VI"
+    ],
+    "musicbrainz_countries": [
+      "Jamaica", "Trinidad and Tobago", "Haiti", "Cuba",
+      "Dominican Republic", "Puerto Rico", "Barbados", "Saint Lucia",
+      "Guadeloupe", "Martinique", "Grenada",
+      "Saint Vincent and the Grenadines", "Antigua and Barbuda"
+    ],
+    "genre_seeds": [
+      "roots reggae", "rocksteady", "ska", "dancehall", "calypso",
+      "kompa", "zouk", "son cubano", "soca", "mento", "bolero"
+    ]
+  },
+
+  "Europe": {
+    "countries": [
+      "AD", "AL", "AT", "AX", "BA", "BE", "BG", "BY", "CH", "CZ",
+      "DE", "DK", "EE", "ES", "FI", "FO", "FR", "GB", "GG", "GI",
+      "GL", "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "LI",
+      "LT", "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO",
+      "PL", "PT", "RO", "RS", "RU", "SE", "SI", "SJ", "SK", "SM",
+      "UA", "VA", "XK", "PM"
+    ],
+    "musicbrainz_countries": [
+      "Spain", "Portugal", "Ireland", "Greece", "France", "Italy",
+      "Germany", "United Kingdom", "Romania", "Bulgaria", "Serbia",
+      "Croatia", "Albania", "Hungary", "Ukraine", "Finland", "Iceland",
+      "Norway", "Sweden", "Denmark", "Poland", "Czech Republic",
+      "Slovakia", "Russia", "Netherlands", "Belgium", "Austria",
+      "Switzerland", "Latvia", "Lithuania", "Estonia", "Moldova",
+      "Bosnia and Herzegovina", "Slovenia", "North Macedonia", "Georgia"
+    ],
+    "genre_seeds": [
+      "flamenco", "fado", "rebetiko", "chanson", "Balkan brass",
+      "klezmer", "Celtic folk", "Sephardic", "Georgian polyphony",
+      "tarantella", "polka", "cantiga", "Nordic folk"
+    ]
+  },
+
+  "North America": {
+    "countries": [
+      "BM", "CA", "GU", "MP", "PM", "PR", "US", "VI", "AS", "UM"
+    ],
+    "musicbrainz_countries": [
+      "United States", "Canada"
+    ],
+    "genre_seeds": [
+      "Delta blues", "New Orleans jazz", "Appalachian old-time", "gospel",
+      "bluegrass", "soul", "Cajun", "Tex-Mex conjunto", "zydeco", "Tejano"
+    ]
+  },
+
+  "Oceania": {
+    "countries": [
+      "AU", "CK", "CX", "CC", "FJ", "FM", "GU", "HM", "KI", "MH",
+      "MP", "NC", "NF", "NR", "NU", "NZ", "PF", "PG", "PN", "PW",
+      "SB", "TK", "TO", "TV", "VU", "WF", "WS"
+    ],
+    "musicbrainz_countries": [
+      "Australia", "New Zealand", "Fiji", "Papua New Guinea",
+      "Solomon Islands", "Vanuatu", "Tonga", "Samoa",
+      "Kiribati", "Marshall Islands", "Micronesia", "Palau",
+      "Nauru", "Tuvalu", "French Polynesia", "New Caledonia"
+    ],
+    "genre_seeds": [
+      "Aboriginal Australian", "Maori waiata", "slack-key guitar",
+      "Polynesian chant", "Pacific gospel", "string band", "didgeridoo",
+      "slit drum"
+    ]
+  }
+}

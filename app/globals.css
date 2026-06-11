@@ -1,17 +1,21 @@
 @import "tailwindcss";
 
 @theme {
-  /* Brand colors */
-  --color-ivory:        #FAF7F2;
-  --color-parchment:    #EEE8E0;
-  --color-ink:         #2C2825;
-  --color-dark-bg:     #1A1714;
-  --color-dark-surface: #242220;
-  --color-muted:       #9A8F87;
-  --color-terracotta:  #C4614A;
+  /* Palette 4.1 — minimalismo caldo. Un solo accento: terracotta. */
+  --color-ivory:      #FAF9F5;
+  --color-parchment:  #F0EEE6;
+  --color-ink:        #1F1E1D;
+  --color-muted:      #8A8377;
+  --color-terracotta: #C96442;
+  --color-border:     #E4E0D5;
+
+  /* Tinte piatte della palette per le zone della mappa (non selezionate) */
+  --color-map-1: #E9E5D9;
+  --color-map-2: #E2DCCE;
+  --color-map-3: #EDE8DD;
 
   /* Typography */
-  --font-serif: var(--font-playfair), Georgia, "Times New Roman", serif;
+  --font-serif: var(--font-lora), Georgia, "Times New Roman", serif;
   --font-sans:  var(--font-inter), system-ui, -apple-system, sans-serif;
 }
 

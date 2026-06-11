@@ -4,75 +4,90 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/CompassIcon'
 import HeartButton, { SaveState } from '@/components/HeartButton'
-import RangeSlider from '@/components/RangeSlider'
-import { Track } from '@/lib/types'
-import {
-  isInGenrePlaylist, addToGenrePlaylist,
-  isInAnyCompilation, addToDefaultCompilation,
-} from '@/lib/saved'
-import { buildInitialStrategies, strategiesFromArtists } from '@/lib/strategies'
+import WorldMap from '@/components/WorldMap'
+import DecadeButtons, { DECADES } from '@/components/DecadeButtons'
+import ModeSelector from '@/components/ModeSelector'
+import { Track, FlowMode } from '@/lib/types'
+import { isInGenrePlaylist, addToGenrePlaylist, isInAnyCompilation, addToDefaultCompilation } from '@/lib/saved'
+import { addToHistory } from '@/lib/history'
 
-const AREAS = [
-  'All', 'West Africa', 'North Africa', 'Middle East',
-  'South Asia', 'East Asia', 'Southeast Asia',
-  'Latin America', 'Caribbean', 'Europe', 'North America', 'Oceania',
-]
+// ── Constants ──────────────────────────────────────────────────────────────
 
-const MIN_YEAR = 1950
-const MAX_YEAR = 2026
 const SEEN_KEY = 'jamnet_seen'
-const QUEUE_KEY = 'jamnet_queue'
-const BATCH = 4  // strategies per API call
+const REFETCH_THRESHOLD = 3
+
+// ── Seen-IDs helpers ────────────────────────────────────────────────────────
 
 function getSeenIds(): string[] {
   try { return JSON.parse(sessionStorage.getItem(SEEN_KEY) || '[]') } catch { return [] }
 }
-function addSeenIds(ids: string[]) {
+function addSeenId(id: string) {
   try {
     const s = new Set(getSeenIds())
-    ids.forEach(id => s.add(id))
-    sessionStorage.setItem(SEEN_KEY, JSON.stringify([...s]))
+    s.add(id)
+    sessionStorage.setItem(SEEN_KEY, JSON.stringify([...s].slice(-600)))
   } catch {}
 }
 
-// ── Strategy queue ─────────────────────────────────────────────────────────────
-function getQueue(): string[] {
-  try { return JSON.parse(sessionStorage.getItem(QUEUE_KEY) || '[]') } catch { return [] }
-}
-function setQueue(q: string[]) {
-  try { sessionStorage.setItem(QUEUE_KEY, JSON.stringify(q.slice(0, 600))) } catch {}
-}
-function popBatch(n: number): string[] {
-  const q = getQueue()
-  const batch: string[] = []
-  const remaining: string[] = []
-  let mbCount = 0
-  for (const s of q) {
-    if (batch.length >= n) {
-      remaining.push(s)
-    } else if (s.startsWith('m::')) {
-      // At most 1 MusicBrainz strategy per batch to respect rate limits
-      if (mbCount === 0) { batch.push(s); mbCount++ } else { remaining.push(s) }
-    } else {
-      batch.push(s)
-    }
-  }
-  setQueue(remaining)
-  return batch
-}
-function addToQueue(strats: string[]) {
-  const q = getQueue()
-  const existing = new Set(q)
-  const toAdd = strats.filter(s => !existing.has(s))
-  setQueue([...q, ...toAdd])
+// ── Country display (catalog stores ISO 3166 codes) ────────────────────────
+
+function countryName(code: string): string {
+  if (!code) return ''
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) || code
+  } catch { return code }
 }
 
-function buildFlowUrl(areas: string[], yf: number, yt: number) {
+// ── YouTube IFrame API types ────────────────────────────────────────────────
+
+declare global {
+  interface Window {
+    YT: {
+      Player: new (el: HTMLElement, opts: YTOpts) => YTPlayer
+      PlayerState: { ENDED: 0; PLAYING: 1; PAUSED: 2; BUFFERING: 3; CUED: 5 }
+    }
+    onYouTubeIframeAPIReady?: () => void
+  }
+}
+
+interface YTOpts {
+  width?: number; height?: number; videoId?: string
+  playerVars?: Record<string, unknown>
+  events?: {
+    onReady?: (e: { target: YTPlayer }) => void
+    onStateChange?: (e: { data: number }) => void
+    onError?: (e: { data: number }) => void
+  }
+}
+
+interface YTPlayer {
+  playVideo(): void
+  pauseVideo(): void
+  stopVideo(): void
+  destroy(): void
+  loadVideoById(videoId: string): void
+  getPlayerState(): number
+}
+
+// ── URL helpers ─────────────────────────────────────────────────────────────
+
+interface FlowFilters {
+  areas?: string[]
+  decades?: number[]
+  country?: string
+  artistMbId?: string
+  artistName?: string
+  mode?: FlowMode
+}
+
+function buildFlowUrl(f: FlowFilters) {
   const p = new URLSearchParams()
-  const filtered = areas.filter(a => a !== 'All')
-  if (filtered.length > 0) p.set('areas', filtered.join(','))
-  if (yf !== MIN_YEAR) p.set('yearFrom', String(yf))
-  if (yt !== MAX_YEAR) p.set('yearTo', String(yt))
+  if (f.areas?.length) p.set('areas', f.areas.join(','))
+  if (f.decades?.length) p.set('decades', f.decades.join(','))
+  if (f.country) p.set('country', f.country)
+  if (f.artistMbId) p.set('artist', f.artistMbId)
+  if (f.artistName) p.set('artistName', f.artistName)
+  if (f.mode && f.mode !== 'rotta') p.set('mode', f.mode)
   const str = p.toString()
   return `/flow${str ? `?${str}` : ''}`
 }
@@ -83,142 +98,317 @@ function getSaveState(id: string): SaveState {
   return 'genre'
 }
 
+// ── Artist card data ─────────────────────────────────────────────────────────
+
+interface ArtistInfo {
+  name: string
+  bioShort: string | null
+  country: string | null
+  macroArea: string | null
+}
+
+// ── Component ───────────────────────────────────────────────────────────────
+
 export default function FlowContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
 
   const areasParam = searchParams.get('areas') ?? ''
-  const areas = areasParam ? areasParam.split(',').map(a => a.trim()).filter(Boolean) : ['All']
-  const yearFrom = Math.max(MIN_YEAR, Math.min(MAX_YEAR, Number(searchParams.get('yearFrom') ?? MIN_YEAR)))
-  const yearTo = Math.max(MIN_YEAR, Math.min(MAX_YEAR, Number(searchParams.get('yearTo') ?? MAX_YEAR)))
+  const areas = areasParam ? areasParam.split(',').map(a => a.trim()).filter(Boolean) : []
+  const decadesParam = searchParams.get('decades') ?? ''
+  const decades = decadesParam
+    ? decadesParam.split(',').map(Number).filter(d => DECADES.includes(d))
+    : []
+  const country = searchParams.get('country') ?? ''
+  const artistMbId = searchParams.get('artist') ?? ''
+  const artistNameParam = searchParams.get('artistName') ?? ''
+  const sharedTrackId = searchParams.get('track') ?? ''
+  const mode: FlowMode = searchParams.get('mode') === 'vortice' ? 'vortice' : 'rotta'
+  const artistFlow = Boolean(artistMbId || artistNameParam)
 
-  const [tracks, setTracks] = useState<Track[]>([])
+  // ── State ────────────────────────────────────────────────────────────────
+
+  const [queue, setQueue] = useState<Track[]>([])
   const [index, setIndex] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [fetchingMore, setFetchingMore] = useState(false)
+  const [fetching, setFetching] = useState(false)
   const [hasInteracted, setHasInteracted] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({})
+  const [useITunes, setUseITunes] = useState(false)    // true = iTunes fallback active
+  const [ytReady, setYtReady] = useState(false)
+
+  // Overlays
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelAreas, setPanelAreas] = useState<string[]>(areas)
-  const [panelYearFrom, setPanelYearFrom] = useState(yearFrom)
-  const [panelYearTo, setPanelYearTo] = useState(yearTo)
+  const [panelDecades, setPanelDecades] = useState<number[]>(decades)
+  const [panelMode, setPanelMode] = useState<FlowMode>(mode)
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportSent, setReportSent] = useState(false)
+  const [artistOpen, setArtistOpen] = useState(false)
+  const [artistInfo, setArtistInfo] = useState<ArtistInfo | null>(null)
+  const [artistLoading, setArtistLoading] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
 
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const fetchingMoreRef = useRef(false)
-  const areasRef = useRef(areas)
-  const yearFromRef = useRef(yearFrom)
-  const yearToRef = useRef(yearTo)
-  const tracksRef = useRef(tracks)
+  // ── Refs ─────────────────────────────────────────────────────────────────
 
-  useEffect(() => { areasRef.current = areas; yearFromRef.current = yearFrom; yearToRef.current = yearTo })
-  useEffect(() => { tracksRef.current = tracks }, [tracks])
+  const ytPlayerRef    = useRef<YTPlayer | null>(null)
+  const ytContainerRef = useRef<HTMLDivElement>(null)
+  const audioRef       = useRef<HTMLAudioElement>(null)
+  const fetchingRef    = useRef(false)
+  const filtersRef     = useRef<FlowFilters>({})
+  const queueRef       = useRef(queue)
+  const indexRef       = useRef(index)
+  const hasInteractedRef = useRef(hasInteracted)
 
-  // ── Fetch ──────────────────────────────────────────────────────────────────
-
-  const fetchTracks = useCallback(async (
-    a: string[], yf: number, yt: number, append = false
-  ) => {
-    if (append) {
-      if (fetchingMoreRef.current) return
-      fetchingMoreRef.current = true
-      setFetchingMore(true)
-    } else {
-      setLoading(true)
+  useEffect(() => {
+    filtersRef.current = {
+      areas, decades, country: country || undefined,
+      artistMbId: artistMbId || undefined,
+      artistName: artistNameParam || undefined,
+      mode,
     }
+  })
+  useEffect(() => { queueRef.current = queue }, [queue])
+  useEffect(() => { indexRef.current = index }, [index])
+  useEffect(() => { hasInteractedRef.current = hasInteracted }, [hasInteracted])
+
+  // ── Load YouTube IFrame API ───────────────────────────────────────────────
+
+  useEffect(() => {
+    if (window.YT?.Player) { setYtReady(true); return }
+    window.onYouTubeIframeAPIReady = () => setYtReady(true)
+    const script = document.createElement('script')
+    script.src = 'https://www.youtube.com/iframe_api'
+    script.async = true
+    document.head.appendChild(script)
+    return () => { window.onYouTubeIframeAPIReady = undefined }
+  }, [])
+
+  // ── Fetch tracks from Supabase ────────────────────────────────────────────
+
+  const fetchTracks = useCallback(async (append: boolean) => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
+    if (append) setFetching(true)
+    else setLoading(true)
+
     try {
-      let strategies: string[]
-
-      if (!append) {
-        // Fresh session: build full strategy queue, take first batch
-        const initial = buildInitialStrategies(a, yf, yt)
-        setQueue(initial.slice(BATCH))
-        strategies = initial.slice(0, BATCH)
-      } else {
-        // Refill queue if running low
-        if (getQueue().length < BATCH * 2) {
-          addToQueue(buildInitialStrategies(a, yf, yt))
-        }
-        strategies = popBatch(BATCH)
-
-        // Expand queue with strategies derived from recently discovered artists
-        if (tracksRef.current.length > 0) {
-          const useAll = a.length === 0 || a.includes('All')
-          const region = useAll ? 'World' : a[0]
-          const recentArtists = [...new Set(
-            tracksRef.current.slice(-12).map(t => t.artist)
-          )].slice(0, 4)
-          addToQueue(strategiesFromArtists(recentArtists, region))
-        }
+      const f = filtersRef.current
+      const currentTrack = queueRef.current[indexRef.current]
+      const body = {
+        areas: f.areas ?? [],
+        decades: f.decades ?? [],
+        country: f.country ?? null,
+        artistMbId: f.artistMbId ?? null,
+        artistName: f.artistName ?? null,
+        mode: f.mode ?? 'rotta',
+        currentArea: currentTrack?.macroArea || null,
+        exclude: getSeenIds().slice(-400),
       }
-
-      const exclude = append ? getSeenIds().slice(-500) : []
-
       const res = await fetch('/api/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ strategies, yearFrom: yf, yearTo: yt, exclude }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       const newTracks: Track[] = data.tracks ?? []
-      addSeenIds(newTracks.map(t => t.id))
+
+      for (const t of newTracks) addSeenId(t.id)
 
       const newStates: Record<string, SaveState> = {}
       for (const t of newTracks) newStates[t.id] = getSaveState(t.id)
 
       if (append) {
-        setTracks(prev => [...prev, ...newTracks])
+        setQueue(prev => [...prev, ...newTracks])
         setSaveStates(prev => ({ ...prev, ...newStates }))
       } else {
-        setTracks(newTracks)
+        setQueue(newTracks)
         setIndex(0)
         setSaveStates(newStates)
       }
-    } catch {
-      // silent
-    } finally {
+    } catch { /* silent */ }
+    finally {
       setLoading(false)
-      setFetchingMore(false)
-      fetchingMoreRef.current = false
+      setFetching(false)
+      fetchingRef.current = false
     }
   }, [])
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { fetchTracks(areas, yearFrom, yearTo, false) }, [searchParams])
+  // Initial load — a shared track link starts the flow on that exact track
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (sharedTrackId) {
+        setLoading(true)
+        try {
+          const res = await fetch(`/api/track?id=${encodeURIComponent(sharedTrackId)}`)
+          const data = await res.json()
+          if (!cancelled && data.track) {
+            addSeenId(data.track.id)
+            setQueue([data.track])
+            setIndex(0)
+            setSaveStates({ [data.track.id]: getSaveState(data.track.id) })
+            setLoading(false)
+            return
+          }
+        } catch { /* fall through to normal flow */ }
+      }
+      if (!cancelled) fetchTracks(false)
+    }
+    load()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
 
+  // Sync panel with current params when opening
   useEffect(() => {
     if (panelOpen) {
-      setPanelAreas(areasRef.current)
-      setPanelYearFrom(yearFromRef.current)
-      setPanelYearTo(yearToRef.current)
+      const f = filtersRef.current
+      setPanelAreas(f.areas ?? [])
+      setPanelDecades(f.decades ?? [])
+      setPanelMode(f.mode ?? 'rotta')
     }
   }, [panelOpen])
 
-  // ── Audio ──────────────────────────────────────────────────────────────────
+  // ── Current track ─────────────────────────────────────────────────────────
 
-  const current = tracks[index]
+  const current = queue[index]
 
+  // Prefetch: refill queue when under threshold
   useEffect(() => {
-    if (!current?.previewUrl) return
-    if (audioRef.current) {
-      audioRef.current.src = current.previewUrl
-      if (hasInteracted) audioRef.current.play().catch(() => {})
+    if (!current) return
+    const remaining = queue.length - index
+    if (remaining < REFETCH_THRESHOLD && !fetching && !loading) {
+      fetchTracks(true)
     }
-    if (index >= tracks.length - 4) {
-      fetchTracks(areasRef.current, yearFromRef.current, yearToRef.current, true)
-    }
-  }, [index, current, hasInteracted, tracks.length, fetchTracks])
+  }, [index, queue.length, current, fetching, loading, fetchTracks])
 
-  // ── Interactions ───────────────────────────────────────────────────────────
+  // Record history
+  useEffect(() => {
+    if (current) addToHistory(current)
+  }, [current?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── YouTube player management ─────────────────────────────────────────────
+
+  const destroyYTPlayer = useCallback(() => {
+    if (ytPlayerRef.current) {
+      try { ytPlayerRef.current.destroy() } catch {}
+      ytPlayerRef.current = null
+    }
+    if (ytContainerRef.current) ytContainerRef.current.innerHTML = ''
+  }, [])
+
+  const initYTPlayer = useCallback((videoId: string) => {
+    if (!ytReady || !ytContainerRef.current) return
+    destroyYTPlayer()
+
+    const el = document.createElement('div')
+    ytContainerRef.current.appendChild(el)
+
+    ytPlayerRef.current = new window.YT.Player(el, {
+      width:  1,
+      height: 1,
+      videoId,
+      playerVars: { autoplay: 1, controls: 0, rel: 0, playsinline: 1 },
+      events: {
+        onReady: ({ target }) => {
+          if (hasInteractedRef.current) target.playVideo()
+        },
+        onStateChange: ({ data }) => {
+          if (data === 0) nextTrackRef.current?.()            // ENDED
+          else if (data === 1) setIsPlaying(true)             // PLAYING
+          else if (data === 2) setIsPlaying(false)            // PAUSED
+        },
+        onError: () => {
+          // YT error → fall back to iTunes if available
+          setUseITunes(true)
+          if (audioRef.current && queueRef.current[indexRef.current]?.previewUrl) {
+            audioRef.current.src = queueRef.current[indexRef.current].previewUrl!
+            if (hasInteractedRef.current) audioRef.current.play().catch(() => {})
+          } else {
+            nextTrackRef.current?.()
+          }
+        },
+      },
+    })
+  }, [ytReady, destroyYTPlayer])
+
+  // nextTrack ref to avoid stale closures inside YT callbacks
+  const nextTrackRef = useRef<(() => void) | null>(null)
+
+  // React to current track changes
+  useEffect(() => {
+    if (!current) return
+
+    if (current.youtubeVideoId && ytReady) {
+      setUseITunes(false)
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = '' }
+      if (ytPlayerRef.current) {
+        try { ytPlayerRef.current.loadVideoById(current.youtubeVideoId) }
+        catch { initYTPlayer(current.youtubeVideoId) }
+      } else {
+        if (hasInteracted) initYTPlayer(current.youtubeVideoId)
+      }
+    } else if (current.previewUrl) {
+      setUseITunes(true)
+      destroyYTPlayer()
+      if (audioRef.current) {
+        audioRef.current.src = current.previewUrl
+        if (hasInteracted) audioRef.current.play().catch(() => {})
+      }
+    } else {
+      // Nothing playable — auto skip
+      setIndex(i => Math.min(i + 1, queueRef.current.length - 1))
+    }
+  }, [current?.id, ytReady]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Navigation / playback controls ───────────────────────────────────────
 
   const nextTrack = useCallback(() => {
-    setIndex(i => (i < tracks.length - 1 ? i + 1 : i))
-  }, [tracks.length])
-
-  const handleTap = () => {
-    if (hasInteracted || !audioRef.current) return
     setHasInteracted(true)
-    audioRef.current.play().catch(() => {})
+    setIndex(i => {
+      const q = queueRef.current
+      let next = i + 1
+      // Never two consecutive tracks by the same artist (except artist flow)
+      if (!filtersRef.current.artistMbId && !filtersRef.current.artistName &&
+          next < q.length && q[next]?.artist === q[i]?.artist && next + 1 < q.length) {
+        next = next + 1
+      }
+      return Math.min(next, q.length - 1)
+    })
+    setReportSent(false)
+  }, [])
+
+  nextTrackRef.current = nextTrack
+
+  const togglePlay = () => {
+    if (!current) return
+    if (!hasInteracted) {
+      setHasInteracted(true)
+      if (current.youtubeVideoId && ytReady) {
+        if (ytPlayerRef.current) {
+          try { ytPlayerRef.current.playVideo() } catch { initYTPlayer(current.youtubeVideoId) }
+        } else {
+          initYTPlayer(current.youtubeVideoId)
+        }
+      } else if (current.previewUrl && audioRef.current) {
+        audioRef.current.play().catch(() => {})
+      }
+      return
+    }
+    if (useITunes && audioRef.current) {
+      if (audioRef.current.paused) audioRef.current.play().catch(() => {})
+      else audioRef.current.pause()
+    } else if (ytPlayerRef.current) {
+      try {
+        if (ytPlayerRef.current.getPlayerState() === 1) ytPlayerRef.current.pauseVideo()
+        else ytPlayerRef.current.playVideo()
+      } catch {}
+    }
   }
+
+  // ── Save handlers ─────────────────────────────────────────────────────────
 
   const handleSaveToGenre = () => {
     if (!current) return
@@ -232,37 +422,118 @@ export default function FlowContent() {
     setSaveStates(prev => ({ ...prev, [current.id]: 'both' }))
   }
 
-  const handleDragEnd = (_: unknown, info: { offset: { y: number }; velocity: { y: number } }) => {
-    if (info.offset.y < -60 || info.velocity.y < -400) nextTrack()
+  // ── Taps on the track card (sez. 4.3) ────────────────────────────────────
+
+  const goWithFilters = (f: FlowFilters) => router.push(buildFlowUrl(f))
+
+  const handleAreaTap = (area: string) => {
+    const f = filtersRef.current
+    goWithFilters({ areas: [area], decades: f.decades, mode: f.mode })
   }
 
-  const handleRegionTap = (region: string) => {
-    router.push(buildFlowUrl([region], yearFrom, yearTo))
+  const handleCountryTap = (code: string) => {
+    const f = filtersRef.current
+    goWithFilters({ country: code, decades: f.decades, mode: f.mode })
   }
 
   const handleYearTap = (year: number) => {
-    const decade = Math.floor(year / 10) * 10
-    router.push(buildFlowUrl(areas, decade, Math.min(decade + 9, MAX_YEAR)))
+    if (!year) return
+    const decade = Math.min(2020, Math.max(1950, Math.floor(year / 10) * 10))
+    const f = filtersRef.current
+    goWithFilters({ areas: f.areas, country: f.country, decades: [decade], mode: f.mode })
   }
 
-  const togglePanelArea = (area: string) => {
-    if (area === 'All') { setPanelAreas(['All']); return }
-    setPanelAreas(prev => {
-      const withoutAll = prev.filter(a => a !== 'All')
-      if (withoutAll.includes(area)) {
-        const next = withoutAll.filter(a => a !== area)
-        return next.length === 0 ? ['All'] : next
+  const openArtistCard = async () => {
+    if (!current) return
+    setArtistOpen(true)
+    setArtistLoading(true)
+    setArtistInfo(null)
+    try {
+      const q = current.artist_mb_id
+        ? `mbId=${encodeURIComponent(current.artist_mb_id)}`
+        : `name=${encodeURIComponent(current.artist)}`
+      const res = await fetch(`/api/artist?${q}`)
+      const data = await res.json()
+      setArtistInfo(data.artist
+        ? { name: data.artist.name, bioShort: data.artist.bioShort, country: data.artist.country, macroArea: data.artist.macroArea }
+        : { name: current.artist, bioShort: null, country: null, macroArea: null })
+    } catch {
+      setArtistInfo({ name: current.artist, bioShort: null, country: null, macroArea: null })
+    } finally {
+      setArtistLoading(false)
+    }
+  }
+
+  const listenToArtist = () => {
+    if (!current) return
+    setArtistOpen(false)
+    goWithFilters(current.artist_mb_id
+      ? { artistMbId: current.artist_mb_id, artistName: current.artist }
+      : { artistName: current.artist })
+  }
+
+  // ── Share — direct link to this track ───────────────────────────────────
+
+  const shareTrack = async () => {
+    if (!current) return
+    const url = `${window.location.origin}/flow?track=${current.id}`
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: `${current.title} — ${current.artist}`, url })
+        return
       }
-      return [...withoutAll, area]
+    } catch { /* user cancelled share — don't fall through */ return }
+    try {
+      await navigator.clipboard.writeText(url)
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    } catch {}
+  }
+
+  // ── Report ────────────────────────────────────────────────────────────────
+
+  const sendReport = async (motivo: 'wrong_video' | 'wrong_metadata') => {
+    if (!current || reportSent) return
+    setReportOpen(false)
+    setReportSent(true)
+    try {
+      await fetch('/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: current.id, motivo }),
+      })
+    } catch { /* silent */ }
+  }
+
+  // ── Panel helpers ─────────────────────────────────────────────────────────
+
+  const togglePanelArea = (area: string) => {
+    setPanelAreas(prev => prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area])
+  }
+
+  const togglePanelDecade = (d: number) => {
+    setPanelDecades(prev => {
+      if (prev.length === 0) return [d]
+      const next = prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
+      return next.length === 0 || next.length === DECADES.length ? [] : next
     })
   }
 
-  // ── Loading / empty ────────────────────────────────────────────────────────
+  const goPanel = () => {
+    setPanelOpen(false)
+    goWithFilters({ areas: panelAreas, decades: panelDecades, mode: panelMode })
+  }
 
-  if (loading && tracks.length === 0) {
+  // ── Cleanup on unmount ────────────────────────────────────────────────────
+
+  useEffect(() => () => destroyYTPlayer(), [destroyYTPlayer])
+
+  // ── Loading / empty states ────────────────────────────────────────────────
+
+  if (loading && queue.length === 0) {
     return (
-      <div className="h-dvh flex flex-col items-center justify-center bg-ivory dark:bg-dark-bg gap-4">
-        <CompassIcon spinning size={48} className="text-ink dark:text-ivory" />
+      <div className="h-dvh flex flex-col items-center justify-center bg-ivory gap-4">
+        <CompassIcon spinning size={48} className="text-ink" />
         <p className="text-sm font-sans text-muted">Finding music…</p>
       </div>
     )
@@ -270,9 +541,13 @@ export default function FlowContent() {
 
   if (!current) {
     return (
-      <div className="h-dvh flex flex-col items-center justify-center bg-ivory dark:bg-dark-bg gap-6 px-8 text-center">
+      <div className="h-dvh flex flex-col items-center justify-center bg-ivory gap-6 px-8 text-center">
         <CompassIcon size={36} className="text-muted" />
-        <p className="font-sans text-muted text-sm">Nothing found. Try a different direction.</p>
+        <p className="font-sans text-muted text-sm">
+          {queue.length === 0
+            ? 'No tracks in catalog yet. Run the build script first.'
+            : 'Nothing more. Try a different direction.'}
+        </p>
         <button onClick={() => router.push('/')} className="text-sm font-sans text-terracotta underline underline-offset-4">
           Back to home
         </button>
@@ -280,59 +555,82 @@ export default function FlowContent() {
     )
   }
 
-  const isPanelAllYears = panelYearFrom === MIN_YEAR && panelYearTo === MAX_YEAR
   const currentSaveState = saveStates[current.id] ?? 'none'
+  const displayCountry = countryName(current.country)
+  // Needle: Rotta — still, swings once on direction change; Vortice — spins while searching
+  const needleSpinning = mode === 'vortice' && (fetching || loading)
+  const directionKey = searchParams.toString()
 
-  // ── Main render ────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <>
-      <audio ref={audioRef} preload="auto" onEnded={nextTrack} />
+      {/* Hidden audio for iTunes fallback */}
+      <audio
+        ref={audioRef}
+        preload="auto"
+        onEnded={nextTrack}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => setIsPlaying(false)}
+      />
 
-      <motion.main
-        className="h-dvh overflow-hidden bg-ivory dark:bg-dark-bg select-none cursor-default"
-        drag="y"
-        dragConstraints={{ top: 0, bottom: 0 }}
-        dragElastic={{ top: 0.14, bottom: 0.02 }}
-        onDragEnd={handleDragEnd}
-        onClick={handleTap}
-        style={{ touchAction: 'none' }}
-      >
-        {/* Top bar */}
+      {/* YouTube IFrame container — visually hidden, always in DOM */}
+      <div
+        ref={ytContainerRef}
+        aria-hidden
+        style={{ position: 'fixed', top: 0, left: 0, width: 1, height: 1, opacity: 0, pointerEvents: 'none', overflow: 'hidden' }}
+      />
+
+      <main className="h-dvh overflow-hidden bg-ivory select-none">
+        {/* Top bar — wordmark, compass (corner), library */}
         <div className="absolute top-0 left-0 right-0 z-20 flex justify-between items-center px-6 pt-6 pt-safe">
           <button
-            onClick={(e) => { e.stopPropagation(); router.push('/') }}
-            className="font-serif text-base opacity-50 hover:opacity-100 transition-opacity"
+            onClick={() => router.push('/')}
+            className="font-serif text-base opacity-50 hover:opacity-100 transition-opacity duration-200"
           >
             JamNet
           </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); router.push('/library') }}
-            className="opacity-40 hover:opacity-100 transition-opacity"
-            aria-label="Library"
-          >
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M4 19V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13" strokeLinecap="round" />
-              <path d="M4 19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2" />
-              <line x1="9" y1="8" x2="15" y2="8" strokeLinecap="round" />
-              <line x1="9" y1="12" x2="13" y2="12" strokeLinecap="round" />
-            </svg>
-          </button>
+          <div className="flex items-center gap-5">
+            <button
+              onClick={() => setPanelOpen(true)}
+              className="group flex items-center justify-center p-1 -m-1"
+              aria-label="Compass — change direction"
+            >
+              <CompassIcon
+                spinning={needleSpinning}
+                nudge={directionKey}
+                size={24}
+                className="text-ink opacity-60 group-hover:opacity-100 transition-opacity duration-200"
+              />
+            </button>
+            <button
+              onClick={() => router.push('/library')}
+              className="opacity-40 hover:opacity-100 transition-opacity duration-200"
+              aria-label="Library"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M4 19V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v13" strokeLinecap="round" />
+                <path d="M4 19a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2" />
+                <line x1="9" y1="8" x2="15" y2="8" strokeLinecap="round" />
+                <line x1="9" y1="12" x2="13" y2="12" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
         </div>
 
-        {/* Track content */}
-        <div className="h-full flex flex-col items-center justify-between px-6 pt-20 pb-10 pb-safe">
+        {/* Track card */}
+        <div className="h-full flex flex-col items-center justify-between px-6 pt-20 pb-8 pb-safe">
           <AnimatePresence mode="wait">
             <motion.div
               key={current.id}
-              className="w-full flex flex-col items-center gap-5"
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -28 }}
-              transition={{ duration: 0.28, ease: 'easeInOut' }}
+              className="w-full flex-1 flex flex-col items-center justify-center gap-5"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25, ease: 'easeInOut' }}
             >
-              {/* Album art */}
-              <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden shadow-md bg-parchment dark:bg-dark-surface">
+              {/* Album art — the main visual */}
+              <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden bg-parchment border border-border relative">
                 {current.artworkUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={current.artworkUrl} alt="" className="w-full h-full object-cover" draggable={false} />
@@ -341,142 +639,283 @@ export default function FlowContent() {
                     <CompassIcon size={48} className="text-muted/40" />
                   </div>
                 )}
+                {useITunes && current.previewUrl && (
+                  <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-ink/60 text-ivory text-[10px] font-sans tracking-wide">
+                    preview
+                  </div>
+                )}
               </div>
 
               {/* Track info */}
               <div className="w-full max-w-xs flex flex-col gap-1">
                 <h1 className="font-serif text-[1.6rem] leading-tight">{current.title}</h1>
-                <span className="text-base font-sans opacity-65">{current.artist}</span>
-                <div className="flex items-center gap-2 text-[13px] font-sans text-muted">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleRegionTap(current.region) }}
-                    className="hover:text-terracotta transition-colors"
-                  >
-                    {current.region !== 'All' ? current.region : current.genre}
-                  </button>
-                  <span className="opacity-40">·</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleYearTap(current.year) }}
-                    className="hover:text-terracotta transition-colors"
-                  >
-                    {current.year}
-                  </button>
+                <button
+                  onClick={openArtistCard}
+                  className="self-start text-base font-sans opacity-65 hover:opacity-100 hover:text-terracotta transition-colors duration-200 text-left"
+                >
+                  {current.artist}
+                </button>
+                <div className="flex flex-wrap items-center gap-2 text-[13px] font-sans text-muted">
+                  {displayCountry && (
+                    <button
+                      onClick={() => handleCountryTap(current.country)}
+                      className="hover:text-terracotta transition-colors duration-200"
+                    >
+                      {displayCountry}
+                    </button>
+                  )}
+                  {displayCountry && current.macroArea && <span className="opacity-40">·</span>}
+                  {current.macroArea && (
+                    <button
+                      onClick={() => handleAreaTap(current.macroArea)}
+                      className="hover:text-terracotta transition-colors duration-200"
+                    >
+                      {current.macroArea}
+                    </button>
+                  )}
+                  {Boolean(current.year) && (
+                    <>
+                      <span className="opacity-40">·</span>
+                      <button
+                        onClick={() => handleYearTap(current.year)}
+                        className="hover:text-terracotta transition-colors duration-200 tabular-nums"
+                      >
+                        {current.year}
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </motion.div>
           </AnimatePresence>
 
-          <AnimatePresence>
-            {!hasInteracted && (
-              <motion.p
-                className="absolute bottom-32 text-xs font-sans text-muted pointer-events-none"
-                initial={{ opacity: 0 }} animate={{ opacity: 0.7 }} exit={{ opacity: 0 }}
-                transition={{ delay: 0.6 }}
-              >
-                Tap to play
-              </motion.p>
-            )}
-          </AnimatePresence>
-
-          {/* Bottom controls */}
-          <div className="w-full max-w-xs flex justify-between items-center">
+          {/* Controls: heart · share · play/pause · skip · report */}
+          <div className="w-full max-w-xs flex items-center justify-between pt-4">
             <HeartButton
               saveState={currentSaveState}
               onSaveToGenre={handleSaveToGenre}
               onSaveToCompilation={handleSaveToCompilation}
-              size={28}
+              size={24}
             />
+
             <button
-              onClick={(e) => { e.stopPropagation(); setPanelOpen(true) }}
-              className="flex items-center justify-center p-2 -m-2 group"
-              aria-label="Change direction"
+              onClick={shareTrack}
+              className="p-2 -m-2 opacity-40 hover:opacity-100 transition-opacity duration-200"
+              aria-label="Share this track"
             >
-              <CompassIcon
-                spinning={fetchingMore} size={28}
-                className="text-ink dark:text-ivory opacity-50 group-hover:opacity-100 group-hover:text-terracotta transition-all"
-              />
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" strokeLinecap="round" />
+                <path d="M16 6l-4-4-4 4M12 2v13" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+
+            <button
+              onClick={togglePlay}
+              aria-label={isPlaying ? 'Pause' : 'Play'}
+              className="w-14 h-14 flex items-center justify-center rounded-full bg-terracotta text-ivory hover:opacity-90 active:scale-95 transition-all duration-200"
+            >
+              {isPlaying ? (
+                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
+                  <rect x="3" y="2.5" width="3.4" height="11" rx="1" />
+                  <rect x="9.6" y="2.5" width="3.4" height="11" rx="1" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
+                  <path d="M4 2.5l9.5 5.5L4 13.5V2.5z" />
+                </svg>
+              )}
+            </button>
+
+            <button
+              onClick={nextTrack}
+              className="p-2 -m-2 opacity-40 hover:opacity-100 transition-opacity duration-200"
+              aria-label="Skip to next track"
+            >
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
+                <path d="M5 4.5l10 7.5-10 7.5V4.5z" />
+                <rect x="17" y="4.5" width="2" height="15" rx="1" />
+              </svg>
+            </button>
+
+            <button
+              onClick={() => { if (!reportSent) setReportOpen(true) }}
+              className={`p-2 -m-2 transition-opacity duration-200 ${reportSent ? 'opacity-20 pointer-events-none' : 'opacity-30 hover:opacity-70'}`}
+              aria-label="Report wrong match"
+              title="Report wrong match"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" strokeLinejoin="round" />
+                <line x1="12" y1="9" x2="12" y2="13" strokeLinecap="round" />
+                <line x1="12" y1="17" x2="12.01" y2="17" strokeLinecap="round" />
+              </svg>
             </button>
           </div>
         </div>
 
+        {/* "Link copied" toast */}
         <AnimatePresence>
-          {hasInteracted && index === 0 && (
+          {linkCopied && (
             <motion.div
-              className="absolute bottom-20 inset-x-0 flex justify-center pointer-events-none"
-              initial={{ opacity: 0, y: 4 }} animate={{ opacity: 0.4, y: 0 }} exit={{ opacity: 0 }}
-              transition={{ delay: 2, duration: 0.5 }}
+              className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-none"
+              initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
             >
-              <svg viewBox="0 0 16 20" width="14" height="18" fill="currentColor" className="text-muted">
-                <path d="M8 0L3 7h4v6h2V7h4L8 0z" />
-                <rect x="6" y="15" width="4" height="2" rx="1" />
-              </svg>
+              <span className="px-3 py-1.5 rounded-lg bg-ink/80 text-ivory text-[12px] font-sans">
+                Link copied
+              </span>
             </motion.div>
           )}
         </AnimatePresence>
-      </motion.main>
+      </main>
 
-      {/* Direction panel */}
+      {/* ── Compass panel: compact map, decades, mode ─────────────────────── */}
       <AnimatePresence>
         {panelOpen && (
           <motion.div
             className="fixed inset-0 z-50 flex flex-col justify-end"
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
           >
-            <div className="absolute inset-0 bg-ink/20 dark:bg-black/50 backdrop-blur-sm" onClick={() => setPanelOpen(false)} />
+            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setPanelOpen(false)} />
             <motion.div
-              className="relative bg-ivory dark:bg-dark-surface rounded-t-2xl px-6 pt-8 pb-10 pb-safe"
+              className="relative bg-ivory rounded-t-2xl px-6 pt-7 pb-10 pb-safe max-h-[88dvh] overflow-y-auto"
               initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 300, damping: 30 }}
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-6 max-w-md mx-auto">
                 <div className="flex items-center gap-3">
-                  <CompassIcon size={20} className="text-terracotta" />
+                  <CompassIcon
+                    size={20}
+                    spinning={panelMode === 'vortice' && fetching}
+                    nudge={directionKey}
+                    className="text-ink"
+                  />
                   <span className="text-sm font-sans text-muted">New direction</span>
                 </div>
+
+                {/* Compact map */}
                 <div className="flex flex-col gap-2">
-                  <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Area</span>
-                  <div className="flex flex-wrap gap-2">
-                    {AREAS.map(area => (
-                      <button
-                        key={area}
-                        onClick={() => togglePanelArea(area)}
-                        className={`px-3 py-1.5 rounded-full text-[13px] font-sans border transition-all ${
-                          panelAreas.includes(area)
-                            ? 'bg-terracotta border-terracotta text-ivory'
-                            : 'border-ink/20 dark:border-ivory/20 text-muted hover:border-terracotta hover:text-terracotta'
-                        }`}
-                      >
-                        {area}
-                      </button>
-                    ))}
+                  <WorldMap selected={panelAreas} onToggle={togglePanelArea} className="w-full" />
+                  <div className="flex justify-center">
+                    <button
+                      onClick={() => setPanelAreas([])}
+                      aria-pressed={panelAreas.length === 0}
+                      className={`px-4 py-1.5 rounded-full text-[13px] font-sans border transition-colors duration-200 ${
+                        panelAreas.length === 0
+                          ? 'bg-terracotta border-terracotta text-ivory'
+                          : 'border-border text-muted'
+                      }`}
+                    >
+                      Whole world
+                    </button>
                   </div>
                 </div>
-                <div className="flex flex-col gap-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[11px] font-sans text-muted uppercase tracking-widest">Period</span>
-                    <span className="text-sm font-sans text-muted tabular-nums">
-                      {isPanelAllYears ? 'All years' : `${panelYearFrom} – ${panelYearTo}`}
-                    </span>
-                  </div>
-                  <RangeSlider
-                    min={MIN_YEAR} max={MAX_YEAR}
-                    from={panelYearFrom} to={panelYearTo}
-                    onChange={(f, t) => { setPanelYearFrom(f); setPanelYearTo(t) }}
-                  />
-                </div>
+
+                <DecadeButtons selected={panelDecades} onToggle={togglePanelDecade} />
+
+                <ModeSelector mode={panelMode} onChange={setPanelMode} />
+
                 <div className="flex justify-between items-center">
-                  <button onClick={() => router.push('/')} className="text-sm font-sans text-muted hover:text-terracotta transition-colors">
+                  <button onClick={() => router.push('/')} className="text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
                     Back to home
                   </button>
                   <button
-                    onClick={() => { setPanelOpen(false); router.push(buildFlowUrl(panelAreas, panelYearFrom, panelYearTo)) }}
-                    className="px-5 py-2 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity"
+                    onClick={goPanel}
+                    className="px-6 py-2.5 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200"
                   >
                     Go
                   </button>
                 </div>
               </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Artist card: bio_short + listen to more ───────────────────────── */}
+      <AnimatePresence>
+        {artistOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-end justify-center"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setArtistOpen(false)} />
+            <motion.div
+              className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+            >
+              <h2 className="font-serif text-xl mb-1">{current.artist}</h2>
+              {artistInfo?.country || current.country ? (
+                <p className="text-[12px] font-sans text-muted mb-4">
+                  {countryName(artistInfo?.country || current.country)}
+                  {current.macroArea ? ` · ${current.macroArea}` : ''}
+                </p>
+              ) : <div className="mb-4" />}
+
+              {artistLoading ? (
+                <p className="text-[14px] font-sans text-muted mb-6">…</p>
+              ) : artistInfo?.bioShort ? (
+                <p className="text-[14px] font-sans leading-relaxed opacity-80 mb-6">
+                  {artistInfo.bioShort}
+                </p>
+              ) : (
+                <p className="text-[14px] font-sans text-muted mb-6">
+                  No notes on this artist yet.
+                </p>
+              )}
+
+              <button
+                onClick={listenToArtist}
+                className="w-full px-4 py-3 rounded-xl border border-terracotta text-terracotta text-[14px] font-sans hover:bg-terracotta hover:text-ivory transition-colors duration-200"
+              >
+                Listen to more by this artist
+              </button>
+              <button
+                onClick={() => setArtistOpen(false)}
+                className="mt-4 text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200"
+              >
+                Close
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Report overlay ────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {reportOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-end justify-center"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setReportOpen(false)} />
+            <motion.div
+              className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
+              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+            >
+              <p className="text-sm font-sans text-muted mb-5">What seems wrong?</p>
+              <div className="flex flex-col gap-3">
+                <button
+                  onClick={() => sendReport('wrong_video')}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-terracotta hover:text-terracotta transition-colors duration-200"
+                >
+                  Wrong video — this video doesn&apos;t match the track
+                </button>
+                <button
+                  onClick={() => sendReport('wrong_metadata')}
+                  className="w-full text-left px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-terracotta hover:text-terracotta transition-colors duration-200"
+                >
+                  Wrong metadata — title, artist or year is incorrect
+                </button>
+              </div>
+              <button
+                onClick={() => setReportOpen(false)}
+                className="mt-5 text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200"
+              >
+                Cancel
+              </button>
             </motion.div>
           </motion.div>
         )}

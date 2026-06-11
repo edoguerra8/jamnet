@@ -65,7 +65,7 @@ export default function LibraryPage() {
   }
 
   return (
-    <main className="min-h-dvh bg-ivory dark:bg-dark-bg px-5 pt-safe pb-safe">
+    <main className="min-h-dvh bg-ivory px-5 pt-safe pb-safe">
       {/* Header */}
       <div className="flex items-center justify-between pt-6 pb-8">
         <button

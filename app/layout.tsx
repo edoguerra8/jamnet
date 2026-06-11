@@ -1,10 +1,10 @@
 import type { Metadata, Viewport } from 'next'
-import { Playfair_Display, Inter } from 'next/font/google'
+import { Lora, Inter } from 'next/font/google'
 import './globals.css'
 
-const playfair = Playfair_Display({
+const lora = Lora({
   subsets: ['latin'],
-  variable: '--font-playfair',
+  variable: '--font-lora',
   display: 'swap',
 })
 
@@ -29,8 +29,8 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${playfair.variable} ${inter.variable} h-full`}>
-      <body className="min-h-full font-sans bg-ivory text-ink dark:bg-dark-bg dark:text-ivory antialiased">
+    <html lang="en" className={`${lora.variable} ${inter.variable} h-full`}>
+      <body className="min-h-full font-sans bg-ivory text-ink antialiased">
         {children}
       </body>
     </html>

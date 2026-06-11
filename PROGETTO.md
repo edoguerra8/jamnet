@@ -1,121 +1,234 @@
 # DOCUMENTO DI PROGETTO — JAMNET
-Versione 1.2 — 10 giugno 2026
-Proprietario: Edo. Questo documento è la memoria del progetto: va incollato all'inizio di ogni sessione di lavoro con Claude (o caricato in Claude Code). Ogni decisione presa qui è definitiva salvo modifica esplicita di Edo.
+Versione 2.1 — 11 giugno 2026
+Sostituisce ogni versione precedente.
 
 ---
 
 ## 1. VISIONE
 
-Un sito per scoprire musica nuova, di ogni luogo e di ogni epoca, con la semplicità d'uso e l'estetica di prodotti come quelli di Apple e Anthropic: massima funzionalità nascosta sotto un'interfaccia minimale. Non è una piattaforma di ascolto: è un motore di scoperta che si appoggia ad Apple Music. L'utente scopre brani tramite anteprime e con un solo gesto li salva in playlist reali sul proprio account Apple Music.
+JamNet è un sito di scoperta musicale. L'utente sceglie un'area del mondo e un periodo, preme play e ascolta un flusso di brani che non si ripete mai e che pesca in profondità dal repertorio musicale mondiale: dalle field recording degli anni '50 alle uscite di oggi.
 
-Principi non negoziabili:
-- **Solo la musica parla.** Nessun numero di ascolti, nessun badge di popolarità, nessuna classifica visibile. Un artista sconosciuto del Mali del 1972 ha la stessa dignità visiva di una star mondiale.
-- **Zero attrito nel caso comune.** Le azioni frequenti (ascolta, avanti, salva) richiedono un solo tocco. La complessità (gestione playlist, orientamento della scoperta) è accessibile ma mai invadente.
-- **Nessun limite alla scoperta.** Ogni genere, paese, decennio. Il sistema non deve mai chiudere l'utente in una bolla.
+Nessun algoritmo sui gusti personali: la scoperta è uguale per tutti. La qualità del flusso è garantita da una curatela strutturale (pesca pesata, dizionario di tradizioni, contesto culturale), non dalla profilazione dell'utente.
 
-## 2. CONCEPT: L'IBRIDO
+L'elemento-firma è la bussola: in modalità Rotta l'ago tiene una direzione; in modalità Vortice gira libero. (Nomi da confermare — alternative: Viaggio/Salto, Course/Whirl.)
 
-### Schermata d'ingresso (Home)
-Quasi vuota. Al centro: una barra di input testuale. L'utente può scriverci qualsiasi cosa: un artista, un brano, "desert blues 70s", "music for rain", un paese, un decennio. Sotto la barra: tre suggerimenti discreti che cambiano a ogni visita (esempi: "From Bamako, 1972" / "Similar to what you saved last week" / "Somewhere unexpected"). Più un pulsante play essenziale: toccandolo senza scrivere nulla si entra nel flusso con proposte libere.
+Lingua interfaccia: inglese (da confermare).
 
-Qualsiasi azione (testo inviato, suggerimento toccato, play) porta alla stessa destinazione: il Flusso.
+---
 
-### Il Flusso (Player)
-Un brano alla volta, a schermo pieno: copertina grande, titolo, artista, luogo e anno. L'anteprima audio (~30 secondi) parte al tocco (vincolo iOS: il primo brano richiede sempre un tocco; i successivi possono concatenarsi).
+## 2. SORGENTI DATI E AUDIO
 
-Gesti:
-- **Swipe verso l'alto** → brano successivo.
-- **Tocco sul cuore** → salva nella playlist attiva (feedback visivo immediato, il flusso non si interrompe).
-- **Tocco prolungato sul cuore** → si apre il selettore playlist: scegli dove salvare, crea una nuova playlist, vedi quelle esistenti. Tutto sincronizzato con Apple Music.
-- **Tocco su artista/luogo/anno** → il flusso si riorienta su quella direzione ("more from here", "more from this era", "more like this artist").
-- **Icona bussola (angolo, discreta)** → pannello con i controlli di direzione del flusso e la possibilità di inserire un nuovo input testuale senza tornare alla Home. La bussola è l'elemento-firma del sito: quando il flusso cerca nuovi brani, l'ago oscilla e poi si assesta sulla nuova direzione trovata. Piccola, semplice, mai invadente.
+| Ruolo | Servizio | Note |
+|---|---|---|
+| Enciclopedia | **MusicBrainz** | Artisti per paese, registrazioni, anno di PRIMA pubblicazione della registrazione, tag, link Wikipedia. Max 1 req/s, User-Agent "JamNet/1.0". |
+| Contesto culturale | **Wikipedia (via MusicBrainz)** | 2 righe di descrizione per artista, salvate in catalogo dallo script. |
+| Riproduzione principale | **YouTube** | IFrame Player API. Abbinamento brano→video fatto dallo script, mai in diretta. Quota Data API: ~100 ricerche/giorno; lo script lavora a lotti con punto di ripresa. Limite noto: il player si ferma a schermo bloccato su mobile (restrizione YouTube, da comunicare con onestà all'utente). |
+| Riserva | **iTunes Search API** | Anteprima 30–90s, copertine, itunes_track_id (= ID Apple Music: prepara l'integrazione futura). |
 
-### Gestione playlist
-Sezione raggiungibile dalla Home (icona discreta). Elenca le playlist create dal sito, permette di crearne, rinominarle, vedere i brani salvati, rimuoverli. Ogni modifica si riflette su Apple Music. Integrazione massima: la playlist sul sito e quella su Apple Music sono la stessa cosa.
+**Apple Music (futuro):** integrazione via MusicKit JS come servizio collegato sopra l'account JamNet. Richiede Apple Developer (99$/anno) e abbonamento dell'utente. Nessun conflitto con il login email. Salvare sempre itunes_track_id e ISRC. Risolverà anche l'ascolto in background su mobile per gli abbonati.
 
-### Aspetto sociale (FASE FUTURA, non MVP)
-Già deciso nel design ma da costruire solo dopo che tutto il resto funziona alla perfezione: profili per gli amici, ognuno collega il proprio Apple Music, condivisione di brani ("ti mando questo brano, ti appare nel flusso segnalato") e visibilità delle playlist degli amici. Niente feed, niente like, niente commenti.
+**Regola architetturale:** il frontend non chiama MAI MusicBrainz/YouTube Data API/iTunes durante l'ascolto. Tutto pesca dal catalogo Supabase costruito dallo script offline.
 
-## 3. DECISIONI PRESE
+---
+
+## 3. ARCHITETTURA
+
+### 3.1 Catalogo (Supabase)
+
+Tabella `tracks`:
+- id (uuid), mb_recording_id (univoco, anti-duplicati)
+- title, artist_name, artist_mb_id
+- country (ISO 3166), macro_area (una delle 11), year (prima pubblicazione, da MusicBrainz)
+- youtube_video_id, itunes_track_id, itunes_preview_url, artwork_url, isrc (tutti annullabili)
+- tags (array generi/tradizioni)
+- weight (numero: rilevanza dell'artista, vedi 3.3)
+- created_at
+
+Tabella `artists`:
+- mb_artist_id (univoco), name, country, macro_area
+- bio_short (2 righe da Wikipedia, lingua dell'interfaccia)
+- relevance (numero di registrazioni/collegamenti/ascolti noti su MusicBrainz, base del peso)
+
+Tabella `match_reports`: track_id, motivo (wrong_video | wrong_metadata), note, created_at — alimentata dal tasto "segnala" nel flusso.
+
+Un brano è riproducibile se ha youtube_video_id o itunes_preview_url; gli altri restano "da risolvere" e lo script li ritenta.
+
+### 3.2 Script di catalogazione (`scripts/build-catalog.js`)
+
+Eseguito a mano, incrementale, rilanciabile.
+1. Legge `data/regions.json` (macro-area → paesi ISO → generi/tradizioni seed; per la diaspora vale il paese di ORIGINE dell'artista quando MusicBrainz lo distingue).
+2. MusicBrainz: artisti per paese e periodo, registrazioni con first release date e tag, indicatori di rilevanza, link Wikipedia → bio_short.
+3. YouTube: ricerca "artista titolo", salva l'ID solo se incorporabile; rispetta la quota e segna il punto di ripresa.
+4. iTunes: track_id, preview, artwork; filtri qualità (scarta karaoke, tribute, cover version, lullaby, meditation, made famous by).
+5. Scrive su Supabase; log finale per area e decennio.
+
+Obiettivo prima esecuzione: nessuna area sotto ~200 brani riproducibili.
+
+### 3.3 Motore di scoperta (frontend)
+
+- Query a Supabase: macro_aree + decenni (+ eventuale paese, vedi 4.2), esclusi gli ID di sessione.
+- **Pesca pesata**: probabilità proporzionale a `weight` — gli artisti più rilevanti emergono più spesso, le profondità oscure affiorano comunque. Uguale per tutti: zero personalizzazione.
+- **Due modalità**:
+  - **Rotta** (default): il brano successivo resta vicino al precedente (stessa area o confinante, epoca simile) e il flusso si sposta gradualmente, come un DJ set; l'utente riorienta con la bussola. Ago: fermo, oscilla solo al cambio direzione.
+  - **Vortice**: pesca da tutto il mondo e ogni epoca selezionata, salti liberi. Ago: gira durante ogni ricerca.
+- Coda di prefetch da 10, ricarica sotto i 3; mai due brani consecutivi dello stesso artista.
+- Riproduzione: YouTube incorporato (la copertina resta il visual principale); fallback automatico anteprima iTunes con etichetta "anteprima".
+- Anti-ripetizione: ID di sessione tenuti lato client, esclusi da ogni query.
+
+---
+
+## 4. INTERFACCIA E LINGUAGGIO VISIVO
+
+### 4.1 Linguaggio visivo (vincolante per ogni fase)
+
+Stile: minimalismo caldo, alla Anthropic. Regole:
+- **Colori**: fondo avorio caldo (es. #FAF9F5; superfici #F0EEE6), testo quasi-nero caldo (es. #1F1E1D), UN solo accento terracotta (es. #C96442 / #CC785C) usato con parsimonia: pulsante play, selezioni attive, ago della bussola, cuore attivo. Nessun gradiente acceso, nessun neon, nessun tema scuro per ora.
+- **Tipografia**: titoli in serif elegante (es. Lora o Source Serif 4), corpo e UI in sans-serif pulito (es. Inter). Gerarchia netta, poche taglie.
+- **Spazio**: margini e respiri generosi; UNA sola azione primaria per schermata; niente schermate affollate.
+- **Forme**: angoli arrotondati morbidi (8–12px), bordi sottili (1px, tono caldo), ombre quasi assenti.
+- **Movimento**: solo animazioni funzionali (ago della bussola, dissolvenza tra brani, feedback di tocco), 200–300ms, mai decorative.
+- **Microtesti**: sobri, caldi, brevi. Niente punti esclamativi, niente gergo tech.
+- **Mappa**: zone in tinte piatte della palette; zona selezionata = riempimento terracotta; etichette leggibili; forme semplici, niente confini nazionali.
+
+### 4.2 Home
+1. **Mappa del mondo SVG toccabile** (elemento centrale): 11 macro-aree selezionabili (multiple), comode al tocco su telefono. Chip "Whole world" sotto, default attivo.
+2. **Bottoni decennio**: 1950s → 2020s, selezione multipla, default tutti.
+3. **Selettore modalità**: Rotta / Vortice (due opzioni, una attiva; copy e icona dell'ago coerenti).
+4. **Play grande e centrale.**
+5. **Destinazione del giorno**: una riga discreta sopra il play ("Today the compass points to: Ethiopia, 1970s") — toccandola si impostano i filtri e parte il flusso. Editoriale, uguale per tutti, generata da una rotazione curata (lista in `data/daily.json`, ciclica, modificabile a mano).
+
+Niente barra di ricerca, niente preset, niente suggerimenti testuali.
+
+### 4.3 Flusso
+Un brano alla volta: copertina grande, titolo, artista, **paese + macro-area**, anno. Controlli: play/pausa, salta, cuore, condividi, segnala.
+- Tocco sulla **macro-area** → filtro su quell'area. Tocco sul **paese** → il flusso si restringe a quel paese (la mappa resta a macro-aree, il motore sa scendere di livello).
+- Tocco sull'**anno** → filtri centrati su quel decennio.
+- Tocco su **artista** → si apre la scheda con bio_short (2 righe di contesto culturale) e link "ascolta altro di questo artista" (avvia flusso filtrato sull'artista).
+- **Condividi**: ogni brano ha un link che apre JamNet direttamente su quel brano.
+- **Segnala**: "abbinamento sbagliato" → scrive in match_reports.
+- **Bussola** (angolo): pannello con mappa compatta, decenni, selettore modalità.
+
+---
+
+## 5. ACCOUNT, LIBRERIA E PLAYLIST
+
+### 5.1 Account
+Magic link via email (Supabase Auth). Tabella `profiles`.
+
+### 5.2 Libreria
+- **Cronologia**: ogni brano proposto viene registrato (anche senza login: in locale; con login: su server, tabella `history`). Pagina "Recently played" nella Libreria: il brano sentito ieri si ritrova sempre.
+- **Like** → tabella `likes`; il brano entra automaticamente nelle **playlist automatiche** per macro-area e, dove i tag lo permettono, per genere/tradizione (si creano da sole alla prima occorrenza).
+- **Compilation personali** a nome libero.
+
+### 5.3 Gestione playlist
+- Spostare/copiare brani dalle automatiche alle personali e tra personali.
+- Riordino (pulsanti su/giù o maniglia grande), rimozione, rinomina/eliminazione delle personali (le automatiche si nascondono, non si eliminano).
+- Ogni playlist è riproducibile in sequenza con il player del flusso e ha un **link di condivisione** (sola lettura per chi lo apre).
+
+Tabelle: `playlists` (id, user_id, name, type: auto_area | auto_genre | custom), `playlist_tracks` (playlist_id, track_id, position), `history` (user_id, track_id, played_at), `likes`.
+
+---
+
+## 6. FASI DI ESECUZIONE
+
+Tre prompt sequenziali. Dopo ogni fase il sito è funzionante e provabile. Ogni prompt richiama la sezione 4.1 (linguaggio visivo).
+
+### ✅ FASE 1 — Completata (2026-06-11)
+
+Realizzato:
+- `data/regions.json`: mappa completa dei paesi ISO → 11 macro-aree + genre_seeds + musicbrainz_countries
+- `data/schema.sql`: SQL pronto per Supabase (tracks, artists, match_reports, history, likes, playlists, playlist_tracks + RLS)
+- `scripts/build-catalog.js`: script incrementale MusicBrainz + YouTube + iTunes, rilanciabile, log per area e decennio
+- `lib/supabase.ts`: client Supabase (browser anon + server service role)
+- `app/api/discover/route.ts`: query Supabase con pesca pesata (weight), modalità Rotta/Vortice, esclusione ID sessione
+- `app/api/report/route.ts`: scrive in match_reports
+- `lib/history.ts`: cronologia locale (localStorage, max 500 voci)
+- `lib/types.ts`: Track aggiornato con youtubeVideoId, country, macroArea, tags, weight
+- `app/flow/FlowContent.tsx`: YouTube IFrame + fallback anteprima iTunes (etichettata "preview"), tasto segnala, cronologia, prefetch 10, anti-consecutivo stesso artista, modalità Rotta (default)
+- Home: controlli esistenti collegati al nuovo motore senza modifiche grafiche
+
+Prossimo: lanciare `node scripts/build-catalog.js` (o `npm run build-catalog`) per popolare il catalogo, poi ascoltare 15–20 minuti.
+
+### Prerequisiti (a mano, una volta sola)
+1. **Supabase**: progetto gratuito su supabase.com; URL, anon key e service role key in `.env.local`.
+2. **YouTube Data API**: su console.cloud.google.com → progetto → abilita "YouTube Data API v3" → chiave API → `.env.local` come YOUTUBE_API_KEY (solo script, mai browser).
+
+---
+
+### PROMPT 1 — Motore e catalogo
+
+> Leggi PROGETTO.md (sezioni 2, 3 e 4.3). Ricostruisci il motore di scoperta:
+> 1. Crea `data/regions.json`: macro-area → paesi ISO → generi seed per tutte le 11 aree (8–15 paesi e 5–10 generi per area dove sensato), versione ragionata e curata.
+> 2. Tabelle Supabase come da sez. 3.1 e 5.3 (tracks, artists, match_reports; predisponi anche history, likes, playlists, playlist_tracks): dammi lo SQL da incollare nell'editor di Supabase.
+> 3. `scripts/build-catalog.js` come da sez. 3.2: MusicBrainz (1 req/s, User-Agent "JamNet/1.0", rilevanza artisti e bio_short da Wikipedia), abbinamento YouTube con gestione quota e punto di ripresa, fallback iTunes con filtri qualità, scrittura incrementale, log per area e decennio. Dammi il comando per lanciarlo.
+> 4. Frontend: il flusso pesca da Supabase come da sez. 3.3 (pesca pesata su weight, modalità Rotta/Vortice — per ora attivabili da una variabile, l'interruttore UI arriva in Fase 2 —, prefetch 10, esclusione ID sessione, mai due brani consecutivi dello stesso artista). Riproduzione YouTube incorporata + fallback anteprima iTunes etichettata.
+> 5. Aggiungi nel flusso i tasti "segnala abbinamento sbagliato" (scrive in match_reports) e registra la cronologia in locale.
+> 6. Non rifare la grafica della Home: collega i controlli esistenti al nuovo motore.
+> Chiavi in `.env.local`. A fine lavoro aggiorna PROGETTO.md segnando la Fase 1 completata.
+
+Verifica: lanciare lo script, primo lotto in catalogo, ascoltare 15–20 minuti: niente ripetizioni, aree rispettate, fallback anteprima funzionante.
+
+---
+
+### ✅ FASE 2 — Completata (2026-06-11)
+
+Realizzato:
+- **Linguaggio visivo 4.1 su tutto il sito**: palette aggiornata (avorio #FAF9F5, superfici #F0EEE6, ink #1F1E1D, terracotta #C96442), titoli in Lora, UI in Inter, tema scuro rimosso, angoli 8–12px, animazioni solo funzionali 200–300ms
+- `components/WorldMap.tsx`: mappa SVG toccabile a 11 macro-aree (selezione multipla, forme semplici arrotondate, tinte piatte della palette, zona selezionata in terracotta, etichette con alone, niente confini nazionali; aree piccole con zona di tocco allargata)
+- Home (sez. 4.2): mappa centrale + chip "Whole world" (default), bottoni decennio 1950s–2020s multipli (default tutti), selettore Rotta/Vortice ("Course"/"Whirl"), play grande centrale, riga "Today the compass points to: …"
+- `data/daily.json` + `lib/daily.ts`: 30 destinazioni curate (paese + decennio), rotazione ciclica per giorno UTC, uguale per tutti; il tocco imposta i filtri e avvia il flusso
+- Flusso (sez. 4.3): paese e macro-area toccabili separatamente (paese → restringe al paese via nuovo filtro `country`), anno → decennio, scheda artista con bio_short (`/api/artist`) e "Listen to more by this artist" (flusso filtrato sull'artista), condividi con link diretto (`/flow?track=<id>`, Web Share + copia link), segnala, controlli espliciti play/pausa · salta · cuore · condividi · segnala, etichetta "preview" sul fallback iTunes
+- Bussola: ago fermo in Rotta che oscilla al cambio direzione, rotante durante la ricerca in Vortice; pannello (angolo in alto) con mappa compatta, decenni e modalità
+- API: `discover` accetta `decades[]` (anche non contigui), `country`, `artistMbId`/`artistName`, `mode`; nuove route `GET /api/track?id=` (link di condivisione) e `GET /api/artist` (bio_short)
+- Eliminati: RangeSlider, slider periodo, ogni residuo di ricerca/preset/tema scuro
+
+Nota: i filtri del flusso ora viaggiano per decenni (`?decades=1970,1990`) invece di `yearFrom/yearTo`.
+
+### PROMPT 2 — Interfaccia e linguaggio visivo
+
+> Leggi PROGETTO.md (sezione 4, tutta — la 4.1 è vincolante). Ricostruisci Home, Flusso e bussola secondo il linguaggio visivo e i layout descritti:
+> 1. Applica la palette, la tipografia e le regole della sez. 4.1 a tutto il sito.
+> 2. Home: mappa SVG toccabile (11 aree, selezione multipla, chip Whole world), bottoni decennio, selettore modalità Rotta/Vortice, play centrale, riga "destinazione del giorno" (crea anche `data/daily.json` con 30 destinazioni curate e la rotazione giornaliera).
+> 3. Flusso: scheda brano come da 4.3 (paese e macro-area toccabili separatamente, anno toccabile, scheda artista con bio_short e "ascolta altro di questo artista", condividi con link diretto al brano, segnala).
+> 4. Bussola: pannello con mappa compatta, decenni e modalità; ago fermo/oscillante in Rotta, rotante in Vortice.
+> 5. Elimina ogni residuo di barra di ricerca, slider e preset.
+> A fine lavoro aggiorna PROGETTO.md segnando la Fase 2 completata.
+
+Verifica: usare il sito solo da telefono; ogni zona della mappa selezionabile al primo tocco; lo stile deve risultare caldo, sobrio, coerente in ogni schermata.
+
+---
+
+### PROMPT 3 — Account, libreria e playlist
+
+> Leggi PROGETTO.md (sezione 5). Implementa:
+> 1. Login magic link (Supabase Auth) + profiles. Al login, la cronologia locale si fonde con quella server.
+> 2. Cuore nel flusso; likes, playlist automatiche per area/genere (creazione automatica alla prima occorrenza), compilation personali.
+> 3. Pagina Libreria: Recently played, playlist automatiche, compilation; spostare/copiare brani tra playlist, riordino su/giù, rimozione, rinomina/eliminazione (automatiche solo nascondibili).
+> 4. Riproduzione in sequenza delle playlist con il player esistente; link di condivisione in sola lettura per ogni playlist.
+> 5. Utente non loggato che tocca il cuore: invito sobrio al login; dopo il login il like viene applicato.
+> Stile come da sez. 4.1. A fine lavoro aggiorna PROGETTO.md segnando la Fase 3 completata.
+
+Verifica: like a 5–6 brani di aree diverse → playlist automatiche corrette; creare una compilation, spostarci due brani, riordinarli, riprodurla, condividerla; ritrovare in Recently played un brano ascoltato senza like.
+
+---
+
+## 7. DECISIONI PRESE
 
 | Tema | Decisione |
 |---|---|
-| Concept | C — Ibrido (filtri geografici/temporali + flusso immersivo). Barra testuale eliminata. |
-| Budget | Apple Developer Program confermato (99$/anno) — pagamento rinviato all'inizio della Fase 3: le Fasi 1-2 sono interamente gratuite (anteprime via iTunes Search API). Verificato: non esiste prova gratuita o sandbox per MusicKit |
-| Dominio | Nessuno per ora: indirizzo gratuito .vercel.app |
-| Tema visivo | Automatico col sistema (chiaro/scuro), stile Claude |
-| Lingua interfaccia | Inglese |
-| Dispositivo primario | iPhone (design mobile-first assoluto) |
-| Computer di lavoro | Mac |
-| Popolarità | Nessuna distinzione visibile popolare/oscuro; pescaggio deliberato in profondità di catalogo |
-| Salvataggio | Tocco singolo → playlist attiva; tocco lungo → scelta/creazione playlist |
-| Home | Chip area geografica (multi-select) + range slider 1950–2026 + pulsante play grande. Nessuna barra testuale. |
-| Flusso — luogo | Tocco sul luogo del brano → filtra per quell'area geografica |
-| Flusso — anno | Tocco sull'anno → centra il range sul decennio |
-| Bussola | Il pannello mostra chip geografici + slider temporale (non più testo libero) |
-| Anti-ripetizione | ID brani visti salvati in sessionStorage; esclusi dalle fetch successive per tutta la sessione |
-| Social | Rimandato a dopo l'MVP completo |
-| Nome del sito | **JamNet** |
-| Metafora guida | La bussola: icona-firma, ago che oscilla durante la ricerca e si assesta sulla direzione trovata |
-| Linguaggio visivo | Ispirato ad Anthropic/Claude: dettagli curati al massimo (vedi sezione 7) |
-
-## 4. ARCHITETTURA TECNICA
-
-Edo non programma: Claude scrive il 100% del codice, Edo esegue setup guidati e prende decisioni di prodotto. Strumento di lavoro consigliato: **Claude Code** su Mac.
-
-Componenti:
-- **Frontend + backend**: applicazione Next.js (React), ospitata su **Vercel** (piano gratuito).
-- **Database**: **Supabase** (piano gratuito) — servirà davvero dalla fase social; nell'MVP uso minimo (preferenze, cache).
-- **Apple Music**: **MusicKit JS** per login utente, anteprime e creazione/gestione playlist. Richiede Apple Developer Program: si genera una chiave privata e un developer token. La ricerca catalogo e i metadati passano dall'**Apple Music API**.
-- **Motore di scoperta**: combinazione di Apple Music API (catalogo, charts ignorate di proposito), **ListenBrainz/MusicBrainz** (relazioni tra artisti, aree geografiche, date) e **Last.fm API** (similar artists, tag). Tutte gratuite. La logica anti-mainstream vive nel nostro codice: dalle liste di candidati si pesca anche e soprattutto in profondità.
-- **Interpretazione della barra di ricerca**: per input liberi tipo "music for rain" si valuterà in Fase 2 se basta una logica a regole + tag Last.fm o se integrare una chiamata all'API di Claude (costo minimo, da decidere allora).
-- **Versionamento**: GitHub (gratuito), collegato a Vercel per il deploy automatico.
-
-Vincoli tecnici noti (onestà preventiva):
-- Su iPhone l'audio non può partire da solo alla prima apertura: serve sempre un tocco iniziale. Dopo, la concatenazione funziona.
-- Le anteprime sono ~30 secondi (limite Apple, uguale per tutti).
-- Le API di raccomandazione hanno un bias verso il popolare: lo si contrasta nel codice, e si affina nel tempo. Non sarà perfetto al giorno uno.
-- Il token Apple Music va rinnovato periodicamente (max 6 mesi): processo semplice, andrà messo in calendario.
-
-## 5. TABELLA DI MARCIA
-
-| Fase | Contenuto | Stato |
-|---|---|---|
-| 0 | Progettazione e documento di progetto | ✅ COMPLETATA |
-| 1 | Setup: account GitHub, Vercel, Supabase, installazione Claude Code su Mac — tutto gratuito | ⬜ Prossima |
-| 2 | Il Flusso: sito online con Home, barra, flusso di scoperta e anteprime (senza login) — gratuito, anteprime via iTunes Search API | ⬜ |
-| 3 | Apple Music: iscrizione Apple Developer (99$/anno), login, salvataggio reale, gestione playlist completa | ⬜ |
-| 4 | Rifinitura: estetica finale, transizioni, dettagli da uso quotidiano reale | ⬜ |
-| 5 | Social: profili amici, collegamento dei loro account, condivisione | ⬜ |
-
-A fine fase si aggiorna lo stato in questa tabella e si annota qualsiasi decisione nuova nella sezione 3.
-
-## 6. METODO DI LAVORO E RISPARMIO CREDITI
-
-1. **Ogni sessione inizia con questo documento.** In Claude Code: tenerlo nella cartella del progetto come `PROGETTO.md` (verrà letto automaticamente se richiamato). In chat: incollarlo come primo messaggio con scritto "Riprendiamo dalla Fase X".
-2. **Una fase (o sotto-obiettivo) per sessione.** Obiettivi chiari riducono gli scambi.
-3. **Messaggi lunghi e completi.** Meglio un messaggio con dieci risposte/decisioni che dieci messaggi brevi. Vale per entrambi.
-4. **Claude Code per costruire, la chat per decidere.** Claude Code scrive, corregge e pubblica i file da solo: elimina gli errori di copia-incolla che bruciano crediti. La chat resta per le decisioni di prodotto e design.
-5. **Aggiornare questo documento a ogni fine sessione**: stato fasi, decisioni nuove, problemi aperti. È la garanzia di non ripartire mai da zero.
-
-## 7. LINGUAGGIO VISIVO — "JAMNET"
-
-Riferimento dichiarato: l'estetica di Anthropic/Claude. Tradotta in scelte concrete e vincolanti:
-
-**Colori.** Tema chiaro: fondo avorio caldo (non bianco puro), testo quasi-nero caldo. Tema scuro: fondo grigio-bruno profondo (non nero puro), testo avorio. Un solo colore d'accento, usato con parsimonia (radar, cuore attivo, link): un arancio terracotta caldo, nella famiglia cromatica di Claude. Nessun gradiente vistoso, nessun colore decorativo gratuito. Il colore vero della schermata lo portano le copertine degli album.
-
-**Tipografia.** Coppia serif + sans, alla Claude: serif elegante per i titoli e i nomi dei brani (calore, carattere editoriale), sans pulito per interfaccia e metadati. Gerarchia netta: pochi pesi, pochi corpi, mai testo superfluo.
-
-**Spazio e composizione.** Aria generosa. Una sola cosa importante per schermata. Margini ampi e costanti. Niente bordi e ombre pesanti: separazione tramite spazio e tono.
-
-**La bussola.** Elemento-firma e unico tocco "giocoso" concesso: icona circolare minimale con ago sottile che oscilla quando il sistema cerca e si assesta quando trova la nuova direzione. Presente nell'icona del sito, nel pannello di orientamento e come stato di caricamento (al posto del solito spinner). Disegnata in stile line-art sottile, coerente con il resto.
-
-**Movimento.** Transizioni brevi e morbide (200–300 ms), mai gratuite: ogni animazione comunica qualcosa (brano che scorre via, cuore che conferma, radar che cerca). Rispetto dell'impostazione di sistema "riduci movimento".
-
-**Micro-dettagli.** Feedback aptico leggero sui gesti chiave (iPhone), stati di caricamento curati (mai schermate vuote brusche), gestione elegante degli errori in una riga di testo, icone coerenti in un'unica famiglia. La cura dei dettagli non è una fase finale: è un criterio di accettazione di ogni fase.
-
----
-*Fine documento. Prossimo passo: Fase 1 (setup). Richiede circa un'ora, con Mac a portata di mano e carta di credito per l'iscrizione Apple Developer.*
-
-
-
+| Nome | JamNet |
+| Firma | Bussola (Rotta: ago fermo; Vortice: ago che gira) |
+| Modalità di flusso | Rotta (deriva graduale, default) / Vortice (salti liberi) — nomi da confermare |
+| Qualità del flusso | Pesca pesata sulla rilevanza degli artisti; zero personalizzazione |
+| Contesto | Bio di 2 righe per artista (Wikipedia via MusicBrainz), scheda toccabile |
+| Riproduzione | YouTube principale + anteprima iTunes di riserva; limite background mobile accettato e comunicato |
+| Geografia | Mappa toccabile a 11 macro-aree; paese sempre visibile e toccabile per restringere; diaspora = paese d'origine |
+| Periodo | Bottoni decennio multipli (1950s–2020s) |
+| Ricerca testuale | Eliminata; in cambio: cronologia sempre disponibile |
+| Ritorno quotidiano | Destinazione del giorno, editoriale e uguale per tutti |
+| Condivisione | Link diretto per ogni brano e ogni playlist |
+| Account | Magic link email |
+| Libreria | Cronologia + like → playlist automatiche + compilation personali modificabili |
+| Stile | Minimalismo caldo (sez. 4.1, vincolante) |
+| Apple Music | Futuro, via MusicKit; itunes_track_id e ISRC salvati fin da ora |
+| Lingua UI | Inglese (da confermare) |

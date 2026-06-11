@@ -3,7 +3,30 @@
     "allow": [
       "Bash(brew --version)",
       "Bash(npm --version)",
-      "Bash(npx create-next-app@latest *)"
+      "Bash(npx create-next-app@latest *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -s \"http://localhost:3000/api/discover?q=ethiopian+jazz\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'{len\\(d[\\\\\"tracks\\\\\"]\\)} tracks'\\); [print\\(f'  {t[\\\\\"title\\\\\"]} — {t[\\\\\"artist\\\\\"]} \\({t[\\\\\"year\\\\\"]}\\)'\\) for t in d['tracks'][:5]]\")",
+      "Bash(curl -s \"http://localhost:3000/api/discover?q=\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); t=d['tracks'][0]; print\\(f'Random seed: {t[\\\\\"title\\\\\"]} — {t[\\\\\"artist\\\\\"]} \\({t[\\\\\"genre\\\\\"]}, {t[\\\\\"year\\\\\"]}\\)'\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(json.dumps\\(d, indent=2\\)[:500]\\)\")",
+      "Bash(kill %1)",
+      "Bash(open http://localhost:3000)",
+      "Bash(kill 10664)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(npx next *)",
+      "Skill(run)",
+      "Bash(chromium-cli *)",
+      "Bash(npx playwright *)",
+      "Bash(npx tsc *)",
+      "Bash(ipconfig getifaddr *)",
+      "Bash(timeout 8 node scripts/build-catalog.js)",
+      "Bash(node *)"
     ]
   }
 }

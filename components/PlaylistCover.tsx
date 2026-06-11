@@ -1,10 +1,10 @@
 // SVG covers for genre playlists and compilations — minimal line-art, design system palette
 
-const IV = '#FAF7F2' // ivory
-const TC = '#C4614A' // terracotta
-const IN = '#2C2825' // ink
-const PA = '#EEE8E0' // parchment
-const MU = '#9A8F87' // muted
+const IV = '#FAF9F5' // ivory
+const TC = '#C96442' // terracotta
+const IN = '#1F1E1D' // ink
+const PA = '#F0EEE6' // parchment
+const MU = '#8A8377' // muted
 
 function WorldCover() {
   return (

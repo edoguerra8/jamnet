@@ -16,7 +16,7 @@ export function isInGenrePlaylist(id: string): boolean {
 
 export function addToGenrePlaylist(track: Track): void {
   const playlists = getGenrePlaylists()
-  const genre = track.macroGenre || 'World'
+  const genre = track.macroArea || track.macroGenre || 'World'
   const existing = playlists[genre] || []
   if (existing.some(t => t.id === track.id)) return
   playlists[genre] = [track, ...existing]
