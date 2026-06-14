@@ -21,13 +21,24 @@ Lingua interfaccia: inglese (da confermare).
 | Ruolo | Servizio | Note |
 |---|---|---|
 | Enciclopedia | **MusicBrainz** | Artisti per paese, registrazioni, anno di PRIMA pubblicazione della registrazione, tag, link Wikipedia. Max 1 req/s, User-Agent "JamNet/1.0". |
+| Scoperta artisti (integrata) | **Wikidata** | Fonte **complementare** a MusicBrainz (non sostitutiva). Endpoint SPARQL pubblico (`query.wikidata.org/sparql`), nessuna chiave. Per ogni paese ISO trova musicisti (P27 + occupazione P106) e gruppi (P495), con il MusicBrainz ID (P434) quando presente. Pausa ≥2 s tra le query, User-Agent "JamNet/1.0". Recupera artisti che la ricerca per area di MusicBrainz non ranka o non ha: dove MB è povero il guadagno è grande (test: Bolivia +189 artisti, Laos +7 solo-Wikidata). |
+| Segnale di rilevanza/tag (integrata) | **Last.fm** | Fonte di **segnale**, non enciclopedica. API key in `.env.local` come `LASTFM_API_KEY` (read-only: lo shared secret serve solo per scritture autenticate, qui non usate). `artist.getInfo` (per MBID o per nome con autocorrect) → ascoltatori/play reali e tag d'uso. Il segnale **modula** la `relevance` esistente (MB o Wikidata) con un fattore log-scalato e limitato — `clamp(log10(listeners+10)/3, 0.5, 2.0)` — così chi ha pubblico reale emerge di più e gli artisti senza ascolti vengono smorzati, senza che una megastar saturi la pesca. I tag riempiono le tracce prive di tag MB. Limite ~5 req/s: lo script sta a ~4 (250 ms), User-Agent "JamNet/1.0". Scoperta nuovi artisti via `geo.getTopArtists`/`tag.getTopArtists`: stage **opzionale** dietro `--lastfm-discover` (stesso trattamento duplicati di Wikidata). |
+| Scoperta artisti correlati (integrata) | **Spotify (Web API)** | Fonte di **scoperta** per far emergere nomi minori vicini ad artisti già noti. Credenziali in `.env.local` come `SPOTIFY_CLIENT_ID` e `SPOTIFY_CLIENT_SECRET`. Autenticazione **Client Credentials Flow** (nessun login utente: client_id/secret → access token ~1 h, rinnovato in automatico). Approccio **a semi**: lo stage parte dagli artisti del catalogo a `relevance` più alta (`--spotify-seeds=N`, default 200) e usa `artists/{id}/related-artists` per trovare correlati non ancora presenti — non gira sull'intero catalogo (i correlati di artisti oscuri sono spesso già noti o ridondanti, e moltiplicherebbero le chiamate). Stesso trattamento anti-duplicati di Wikidata (id sintetico `sp:<spotifyId>` + nome+paese) e integrazione delle sessioni precedenti via checkpoint (`spotifyDone[seedId]`). Rate limit a finestra mobile: ~5 req/s (200 ms), rispetto dell'header `Retry-After` sui 429. **⚠ Vincoli Spotify 2024–2025** (vedi nota sotto): l'auth funziona, ma gli endpoint dati richiedono che il **proprietario dell'app abbia Spotify Premium attivo** e `related-artists` è **deprecato** per le app create dopo il 27/11/2024; lo stage rileva il 403, lo segnala e prosegue senza bloccare la pipeline. Flag: `--spotify-test` (dry run), `--spotify-only`, `--skip-spotify`, `--spotify-seeds=N`. |
 | Contesto culturale | **Wikipedia (via MusicBrainz)** | 2 righe di descrizione per artista, salvate in catalogo dallo script. |
 | Riproduzione principale | **YouTube** | IFrame Player API. Abbinamento brano→video fatto dallo script, mai in diretta. Quota Data API: ~100 ricerche/giorno; lo script lavora a lotti con punto di ripresa. Limite noto: il player si ferma a schermo bloccato su mobile (restrizione YouTube, da comunicare con onestà all'utente). |
 | Riserva | **iTunes Search API** | Anteprima 30–90s, copertine, itunes_track_id (= ID Apple Music: prepara l'integrazione futura). |
 
 **Apple Music (futuro):** integrazione via MusicKit JS come servizio collegato sopra l'account JamNet. Richiede Apple Developer (99$/anno) e abbonamento dell'utente. Nessun conflitto con il login email. Salvare sempre itunes_track_id e ISRC. Risolverà anche l'ascolto in background su mobile per gli abbonati.
 
-**Regola architetturale:** il frontend non chiama MAI MusicBrainz/YouTube Data API/iTunes durante l'ascolto. Tutto pesca dal catalogo Supabase costruito dallo script offline.
+**Artisti da Wikidata e schema:** la tabella `artists` ha `mb_artist_id` come chiave primaria (text, non nullo). Gli artisti trovati su Wikidata **con** P434 usano il MusicBrainz ID reale, così si fondono con le righe MB (deduplica) e ne vengono caricate anche le registrazioni. Gli artisti **solo Wikidata** (senza P434) usano una chiave sintetica `wd:<QID>` (es. `wd:Q1340`): nessuna modifica allo schema, provenienza esplicita, `relevance` derivata dai sitelink Wikipedia. Restano senza tracce MB finché non emergono altrove (es. iTunes) — coperti dal flusso solo quando diventano riproducibili.
+
+**Last.fm e relevance:** lo stage Last.fm gira **dopo** MusicBrainz e Wikidata, sull'intero catalogo (anche i nuovi artisti). Per ogni artista: `relevance_finale = round(relevance_base × clamp(log10(listeners+10)/3, 0.5, 2.0))`, da cui si ricalcola il `weight` di tutte le sue tracce (`weightFromRelevance`, unico punto di verità). Idempotente: il checkpoint (`lastfmDone[id]`) garantisce un solo passaggio per artista, così i rilanci non ricompongono il fattore sulla relevance già modulata. Gli artisti solo-Wikidata (`wd:…`) vengono cercati per nome con autocorrect. Esempi misurati (dry run `--lastfm-test`, base = recording-count MB): Fela Kuti weight 48→90 (×1.89, 484k ascoltatori), Tinariwen 32→59 (×1.85), Ali Farka Touré 24→44 (×1.82), Cesária Évora 46→81 (×1.78); chi è già al massimo (Caetano Veloso, Nusrat Fateh Ali Khan) resta a 100.
+
+**Spotify e scoperta correlati:** lo stage Spotify gira **dopo** Last.fm (così i semi sono ordinati sulla relevance già modulata), come fonte di scoperta accanto a Wikidata. Autenticazione Client Credentials Flow (solo client_id/secret, in `.env.local` come `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET`). Dai semi a relevance più alta (default 200, `--spotify-seeds=N`) prende i correlati via `related-artists` e inserisce quelli nuovi con id sintetico `sp:<spotifyId>` e `relevance` derivata dai follower (`log10(followers+10)×15`, scala comparabile a Wikidata e alla scoperta Last.fm); paese e macro-area ereditati dal seme (scena vicina). Gli artisti **solo Spotify** non hanno tracce MB, esattamente come i solo-Wikidata: restano coperti dal flusso quando diventano riproducibili altrove (es. iTunes). Idempotente: il checkpoint `spotifyDone[seedId]` salta i semi già trattati nelle sessioni precedenti.
+
+**⚠ Vincoli operativi Spotify (stato attuale, 2026-06-14):** l'autenticazione Client Credentials **funziona** (token rilasciato, verificato con `--spotify-test`), ma **ogni endpoint dati** (`search`, `artists`, `related-artists`) risponde **403 — "Active premium subscription required for the owner of the app"**: dal 2025 Spotify richiede che il proprietario dell'app (l'account che ha generato le credenziali) abbia un **abbonamento Premium attivo**, altrimenti la Web API è inaccessibile via Client Credentials. In più, `related-artists` (e `recommendations`, `audio-features`) è stato **deprecato il 27/11/2024** per le app create dopo quella data: anche con Premium attivo, una app nuova potrebbe non poterlo usare. Lo stage è implementato e pronto, gestisce il 403 senza interrompere la pipeline, ma **non può scoprire artisti finché il blocco persiste**. Sblocco: (1) attivare Premium sull'account proprietario dell'app; (2) se `related-artists` resta inaccessibile, ripiegare sul **grafo di collaborazioni** (album del seme → artisti in feat./`appears_on`), che usa endpoint non deprecati per ottenere lo stesso effetto "nomi minori vicini al noto". Il test su campione non ha potuto riportare artisti nuovi: bloccato a monte dal 403, non dalla logica dello stage.
+
+**Regola architetturale:** il frontend non chiama MAI MusicBrainz/YouTube Data API/iTunes/Last.fm/Spotify durante l'ascolto. Tutto pesca dal catalogo Supabase costruito dallo script offline.
 
 ---
 
@@ -47,7 +58,7 @@ Tabella `tracks`:
 Tabella `artists`:
 - mb_artist_id (univoco), name, country, macro_area
 - bio_short (2 righe da Wikipedia, lingua dell'interfaccia)
-- relevance (numero di registrazioni/collegamenti/ascolti noti su MusicBrainz, base del peso)
+- relevance (numero di registrazioni/collegamenti su MusicBrainz — o sitelink Wikidata — modulato dal segnale di ascolti Last.fm; base del peso)
 
 Tabella `match_reports`: track_id, motivo (wrong_video | wrong_metadata), note, created_at — alimentata dal tasto "segnala" nel flusso.
 
@@ -60,7 +71,10 @@ Eseguito a mano, incrementale, rilanciabile.
 2. MusicBrainz: artisti per paese e periodo, registrazioni con first release date e tag, indicatori di rilevanza, link Wikipedia → bio_short.
 3. YouTube: ricerca "artista titolo", salva l'ID solo se incorporabile; rispetta la quota e segna il punto di ripresa.
 4. iTunes: track_id, preview, artwork; filtri qualità (scarta karaoke, tribute, cover version, lullaby, meditation, made famous by).
-5. Scrive su Supabase; log finale per area e decennio.
+5. Wikidata: artisti complementari per paese (vedi sez. 2).
+6. Last.fm: per ogni artista in catalogo, `artist.getInfo` → modula la `relevance` e ricalcola il `weight` delle tracce; backfill tag dove mancano (vedi sez. 2). Flag: `--lastfm-test` (dry run before/after), `--lastfm-only`, `--skip-lastfm`, `--lastfm-discover` (scoperta opzionale).
+7. Spotify: scoperta artisti correlati dai semi a relevance più alta via `related-artists` (vedi sez. 2). Flag: `--spotify-test` (dry run), `--spotify-only`, `--skip-spotify`, `--spotify-seeds=N`. Soggetto ai vincoli Premium/deprecazione documentati in sez. 2: lo stage rileva il 403 e prosegue senza bloccare.
+8. Scrive su Supabase; log finale per area e decennio.
 
 Obiettivo prima esecuzione: nessuna area sotto ~200 brani riproducibili.
 
@@ -152,6 +166,7 @@ Prossimo: lanciare `node scripts/build-catalog.js` (o `npm run build-catalog`) p
 ### Prerequisiti (a mano, una volta sola)
 1. **Supabase**: progetto gratuito su supabase.com; URL, anon key e service role key in `.env.local`.
 2. **YouTube Data API**: su console.cloud.google.com → progetto → abilita "YouTube Data API v3" → chiave API → `.env.local` come YOUTUBE_API_KEY (solo script, mai browser).
+3. **Last.fm**: account su last.fm/api → crea un'applicazione → API key → `.env.local` come LASTFM_API_KEY (read-only; shared secret non necessario). Già configurata.
 
 ---
 

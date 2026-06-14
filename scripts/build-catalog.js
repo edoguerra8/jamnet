@@ -14,8 +14,8 @@
 const { readFileSync, writeFileSync, existsSync } = require('fs')
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { join } = require('path')
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { createClient } = require('@supabase/supabase-js')
+// @supabase/supabase-js è richiesto in modo lazy (solo quando si scrive su Supabase),
+// così la dry-run Wikidata gira anche senza node_modules installati.
 
 const ROOT       = join(__dirname, '..')
 const CHECKPOINT = join(__dirname, '.checkpoint.json')
@@ -33,17 +33,78 @@ function loadEnv() {
   return env
 }
 
-const ENV          = loadEnv()
+// ── CLI flags ────────────────────────────────────────────────────────────────
+// --wikidata-test=IS,BO,LA  → dry run: interroga solo Wikidata e stampa un report,
+//                             nessuna scrittura su Supabase (utile senza .env.local).
+// --wikidata-only           → esegue solo lo stage Wikidata (salta MusicBrainz).
+// --skip-wikidata           → esegue solo MusicBrainz (comportamento legacy).
+// --lastfm-test[=Nome1,Nome2] → dry run: interroga Last.fm (e MusicBrainz per la base)
+//                             per un campione di artisti e stampa relevance/weight
+//                             prima/dopo. Nessuna scrittura. Funziona senza .env.local.
+// --lastfm-only             → esegue solo lo stage Last.fm (salta MusicBrainz e Wikidata).
+// --skip-lastfm             → salta lo stage Last.fm.
+// --lastfm-discover         → abilita lo stage opzionale di SCOPERTA via Last.fm
+//                             (geo.getTopArtists per paese, tag.getTopArtists per genere).
+//                             Off di default: la scoperta è una fase separatamente gated.
+// --spotify-test[=Nome1,..] → dry run: autentica (Client Credentials), cerca gli artisti
+//                             del campione e stampa gli artisti correlati trovati.
+//                             Nessuna scrittura. Legge le credenziali da .env.local o env.
+// --spotify-only            → esegue solo lo stage Spotify (salta MB/Wikidata/Last.fm).
+// --skip-spotify            → salta lo stage Spotify.
+// --spotify-seeds=N         → numero di artisti-seme (top per relevance) usati come
+//                             punto di partenza per i correlati (default 200).
+// --discogs-test=Paese:decennio[,...] → dry run: interroga Discogs per (paese, decennio)
+//                             — es. "Mali:1970,Nigeria:1970" — e stampa quante release,
+//                             quanti brani e quanti artisti (nuovi vs MB) emergono.
+//                             Nessuna scrittura. Legge DISCOGS_TOKEN da .env.local o env.
+// --discogs-only            → esegue solo lo stage Discogs (salta MB/Wikidata/Last.fm/Spotify).
+// --skip-discogs            → salta lo stage Discogs.
+
+const ARGV       = process.argv.slice(2)
+const WD_TEST    = (ARGV.find(a => a.startsWith('--wikidata-test=')) || '').split('=')[1] || null
+const WD_ONLY    = ARGV.includes('--wikidata-only')
+const SKIP_WD    = ARGV.includes('--skip-wikidata')
+const LF_TEST_ARG = ARGV.find(a => a === '--lastfm-test' || a.startsWith('--lastfm-test='))
+const LF_TEST    = LF_TEST_ARG ? ((LF_TEST_ARG.split('=')[1] || '').trim() || true) : null
+const LF_ONLY    = ARGV.includes('--lastfm-only')
+const SKIP_LF    = ARGV.includes('--skip-lastfm')
+const LF_DISCOVER = ARGV.includes('--lastfm-discover')
+const SP_TEST_ARG = ARGV.find(a => a === '--spotify-test' || a.startsWith('--spotify-test='))
+const SP_TEST    = SP_TEST_ARG ? ((SP_TEST_ARG.split('=')[1] || '').trim() || true) : null
+const SP_ONLY    = ARGV.includes('--spotify-only')
+const SKIP_SP    = ARGV.includes('--skip-spotify')
+const SP_SEEDS   = parseInt((ARGV.find(a => a.startsWith('--spotify-seeds=')) || '').split('=')[1]) || 200
+const DG_TEST    = (ARGV.find(a => a.startsWith('--discogs-test=')) || '').split('=')[1] || null
+const DG_ONLY    = ARGV.includes('--discogs-only')
+const SKIP_DG    = ARGV.includes('--skip-discogs')
+const DRY_RUN    = Boolean(WD_TEST) || Boolean(LF_TEST) || Boolean(SP_TEST) || Boolean(DG_TEST)
+
+let ENV = {}
+try { ENV = loadEnv() }
+catch (e) { if (!DRY_RUN) { console.error(e.message); process.exit(1) } }
+
 const SUPABASE_URL = ENV['NEXT_PUBLIC_SUPABASE_URL']
 const SUPABASE_KEY = ENV['SUPABASE_SERVICE_ROLE_KEY']
 const YOUTUBE_KEY  = ENV['YOUTUBE_API_KEY']
+// LASTFM_API_KEY: da .env.local; in mancanza ripiega su una variabile d'ambiente
+// (comodo per il dry-run --lastfm-test senza .env.local).
+const LASTFM_KEY   = ENV['LASTFM_API_KEY'] || process.env.LASTFM_API_KEY
+// Spotify: stesso schema (env.local → process.env), per il dry-run senza .env.local.
+const SPOTIFY_ID     = ENV['SPOTIFY_CLIENT_ID']     || process.env.SPOTIFY_CLIENT_ID
+const SPOTIFY_SECRET = ENV['SPOTIFY_CLIENT_SECRET'] || process.env.SPOTIFY_CLIENT_SECRET
+// Discogs: stesso schema (env.local → process.env), per il dry-run senza .env.local.
+const DISCOGS_TOKEN  = ENV['DISCOGS_TOKEN'] || process.env.DISCOGS_TOKEN
 
-if (!SUPABASE_URL || !SUPABASE_KEY) {
-  console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local')
-  process.exit(1)
+let sb = null
+if (!DRY_RUN) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local')
+    process.exit(1)
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { createClient } = require('@supabase/supabase-js')
+  sb = createClient(SUPABASE_URL, SUPABASE_KEY)
 }
-
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -164,6 +225,12 @@ function calcRelevance(artist) {
   return Math.max(1, parseInt(artist.score) || 0, parseInt(artist['recording-count']) || 0)
 }
 
+// Peso di una traccia derivato dalla relevance dell'artista (1–100).
+// Unico punto di verità: usato dallo stage MusicBrainz/Wikidata e da Last.fm.
+function weightFromRelevance(relevance) {
+  return Math.max(1, Math.min(100, Math.ceil((relevance || 1) / 10)))
+}
+
 function getFirstYear(recording) {
   const fd = recording['first-release-date']
   if (fd) return parseInt(fd.slice(0, 4))
@@ -219,6 +286,1001 @@ async function itunesSearch(artist, title) {
   } catch { return null }
 }
 
+// ── Wikidata (SPARQL) — fonte artisti complementare a MusicBrainz ────────────
+// Endpoint pubblico, nessuna chiave. User-Agent descrittivo obbligatorio.
+// Pausa >= 2 s tra le query per rispettare l'endpoint condiviso.
+
+const WD_ENDPOINT          = 'https://query.wikidata.org/sparql'
+const WD_DELAY_MS          = 2000
+const WD_LIMIT_PER_COUNTRY = 300
+let lastWdCall = 0
+
+// Occupazioni (P106) considerate "musicista" + tipi di gruppo (P31).
+// musician, singer, singer-songwriter, composer, songwriter, rapper, DJ,
+// multi-instrumentalist, guitarist, musical-artist.
+const WD_OCCUPATIONS = 'wd:Q639669 wd:Q177220 wd:Q488205 wd:Q36834 wd:Q753110 wd:Q2643890 wd:Q130857 wd:Q12800682 wd:Q855091 wd:Q386854'
+// band, musical ensemble
+const WD_GROUP_TYPES = 'wd:Q215380 wd:Q2088357'
+
+function wdQuery(iso) {
+  return `
+SELECT DISTINCT ?artist ?artistLabel ?countryLabel ?mbid ?sitelinks ?article WHERE {
+  ?country wdt:P297 "${iso}".
+  {
+    ?artist wdt:P27 ?country ; wdt:P106 ?occ .
+    VALUES ?occ { ${WD_OCCUPATIONS} }
+  } UNION {
+    ?artist wdt:P31 ?gtype ; wdt:P495 ?country .
+    VALUES ?gtype { ${WD_GROUP_TYPES} }
+  }
+  OPTIONAL { ?artist wdt:P434 ?mbid. }
+  OPTIONAL { ?artist wikibase:sitelinks ?sitelinks. }
+  OPTIONAL { ?article schema:about ?artist ; schema:isPartOf <https://en.wikipedia.org/> . }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+}
+ORDER BY DESC(?sitelinks)
+LIMIT ${WD_LIMIT_PER_COUNTRY}`
+}
+
+async function wdFetch(iso) {
+  const wait = WD_DELAY_MS - (Date.now() - lastWdCall)
+  if (wait > 0) await sleep(wait)
+  lastWdCall = Date.now()
+  const url = `${WD_ENDPOINT}?query=${encodeURIComponent(wdQuery(iso))}&format=json`
+  const res = await withRetry('wdFetch', () => fetch(url, {
+    headers: {
+      'User-Agent': 'JamNet/1.0 (edoardoguerra88@gmail.com)',
+      Accept: 'application/sparql-results+json',
+    },
+  }))
+  if (res.status === 429) {
+    console.warn('  Wikidata 429 (rate limit) — wait 30 s')
+    await sleep(30000)
+    return wdFetch(iso)
+  }
+  if (!res.ok) return []
+  const data = await res.json()
+  return data?.results?.bindings || []
+}
+
+function parseWdRow(r) {
+  const qid = (r.artist?.value || '').split('/').pop()
+  const article = r.article?.value
+  const enwiki = article && article.includes('/wiki/')
+    ? decodeURIComponent(article.split('/wiki/')[1])
+    : null
+  return {
+    qid,
+    name:         r.artistLabel?.value || qid,
+    countryLabel: r.countryLabel?.value || null,
+    mbid:         r.mbid?.value || null,
+    sitelinks:    parseInt(r.sitelinks?.value || '0') || 0,
+    enwiki,
+  }
+}
+
+// Artisti Wikidata per codice ISO alpha-2. Deduplica per QID, scarta i non etichettati.
+async function fetchArtistsFromWikidata(iso) {
+  const rows = await wdFetch(iso)
+  const out = []
+  const seen = new Set()
+  for (const r of rows) {
+    const a = parseWdRow(r)
+    if (!a.qid || seen.has(a.qid)) continue
+    if (/^Q\d+$/.test(a.name)) continue   // etichetta mancante → salta
+    seen.add(a.qid)
+    out.push(a)
+  }
+  return out
+}
+
+// Rilevanza per artisti Wikidata: i sitelink (numero di edizioni Wikipedia)
+// sono un buon proxy di notorietà, paragonabile al recording-count di MB.
+function wdRelevance(sitelinks) {
+  return Math.max(1, sitelinks * 3)
+}
+
+// ── Last.fm — segnale di rilevanza/tag ───────────────────────────────────────
+// Fonte di SEGNALE (non enciclopedica): ascoltatori/play reali e tag d'uso.
+// Read-only: basta la API key (lo shared secret serve solo per le scritture
+// autenticate, qui non usate). Limite ~5 req/s: stiamo a ~4 (250 ms).
+//
+// Modello concordato: il segnale Last.fm MODULA la relevance esistente
+// (MusicBrainz o Wikidata), non la sostituisce. Gli ascoltatori spaziano su ~3
+// ordini di grandezza, quindi si usa un fattore log-scalato e limitato:
+//   factor = clamp( log10(listeners + 10) / 3 , 0.5 , 2.0 )
+// relevance_finale = round(relevance_base × factor); weight = weightFromRelevance.
+// Così chi ha pubblico reale emerge di più e gli artisti senza ascolti vengono
+// smorzati, senza che una megastar (milioni di ascoltatori) saturi la pesca.
+
+const LASTFM_ENDPOINT = 'https://ws.audioscrobbler.com/2.0/'
+const LASTFM_DELAY_MS = 250   // ~4 req/s, conservativo sotto il limite di 5/s
+let lastLfCall = 0
+
+async function lfFetch(params) {
+  const wait = LASTFM_DELAY_MS - (Date.now() - lastLfCall)
+  if (wait > 0) await sleep(wait)
+  lastLfCall = Date.now()
+  const qs = new URLSearchParams({ ...params, api_key: LASTFM_KEY, format: 'json' }).toString()
+  const res = await withRetry('lfFetch', () => fetch(`${LASTFM_ENDPOINT}?${qs}`, {
+    headers: { 'User-Agent': 'JamNet/1.0 (edoardoguerra88@gmail.com)' },
+  }))
+  if (res.status === 429) {
+    console.warn('  Last.fm 429 (rate limit) — wait 20 s')
+    await sleep(20000)
+    return lfFetch(params)
+  }
+  if (!res.ok) return null
+  const data = await res.json()
+  if (data.error) return null   // 6 = not found, 8 = operation failed, ecc.
+  return data
+}
+
+// Fattore di modulazione log-scalato e limitato a [0.5, 2.0].
+function lastfmFactor(listeners) {
+  const f = Math.log10((listeners || 0) + 10) / 3
+  return Math.max(0.5, Math.min(2.0, f))
+}
+
+// artist.getInfo: preferisce il MusicBrainz ID (match esatto); in mancanza usa il
+// nome con autocorrect. Se l'mbid non è noto a Last.fm, ripiega sul nome.
+async function lastfmArtistInfo({ mbid, name }) {
+  let d = mbid ? await lfFetch({ method: 'artist.getinfo', mbid }) : null
+  if ((!d || !d.artist?.stats) && name) {
+    d = await lfFetch({ method: 'artist.getinfo', artist: name, autocorrect: '1' })
+  }
+  const ar = d?.artist
+  if (!ar || !ar.stats) return null
+  return {
+    listeners: parseInt(ar.stats.listeners) || 0,
+    playcount: parseInt(ar.stats.playcount) || 0,
+    tags:      (ar.tags?.tag || []).map(t => (t.name || '').toLowerCase()).filter(Boolean).slice(0, 6),
+    mbid:      ar.mbid || null,
+  }
+}
+
+// Unisce tag esistenti + tag Last.fm, deduplicati (case-insensitive), max 8.
+function mergeTags(existing, lfTags) {
+  const out = []
+  const seen = new Set()
+  for (const t of [...(existing || []), ...(lfTags || [])]) {
+    const k = (t || '').toLowerCase().trim()
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    out.push(t)
+    if (out.length >= 8) break
+  }
+  return out
+}
+
+// Tutti gli artisti in catalogo (paginato), con relevance per la modulazione.
+async function loadAllArtists() {
+  const out = []
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('artists')
+      .select('mb_artist_id, name, country, relevance')
+      .range(from, from + PAGE - 1)
+    if (error || !data?.length) break
+    out.push(...data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return out
+}
+
+// Applica il nuovo peso a tutte le tracce dell'artista e, dove i tag mancano,
+// fa backfill con i tag Last.fm (non sovrascrive i tag MusicBrainz esistenti).
+async function applyLastfmToTracks(artistId, weight, lfTags) {
+  await withRetry('lastfm:updateTracksWeight', async () => {
+    const { error } = await sb.from('tracks').update({ weight }).eq('artist_mb_id', artistId)
+    if (error) console.warn('  update tracks weight:', error.message)
+  })
+  if (!lfTags?.length) return
+  const { data: tracks } = await sb.from('tracks')
+    .select('id, tags').eq('artist_mb_id', artistId)
+  for (const t of tracks || []) {
+    if (t.tags && t.tags.length) continue   // non tocco le tracce già taggate (MB)
+    const merged = mergeTags(t.tags, lfTags)
+    if (!merged.length) continue
+    await withRetry('lastfm:updateTrackTags', async () => {
+      const { error } = await sb.from('tracks').update({ tags: merged }).eq('id', t.id)
+      if (error) console.warn('  update track tags:', error.message)
+    })
+  }
+}
+
+// Stage Last.fm: per ogni artista in catalogo recupera il segnale, modula la
+// relevance e aggiorna i pesi delle sue tracce. Idempotente: il checkpoint
+// (cp.lastfmDone[id]) garantisce un solo passaggio per artista, così rilanci
+// successivi non ricompongono il fattore sulla relevance già modulata.
+async function runLastfmStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  LAST.FM — segnale di rilevanza/tag per gli artisti in catalogo')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!LASTFM_KEY) {
+    console.warn('  LASTFM_API_KEY mancante in .env.local — salto lo stage Last.fm')
+    return
+  }
+
+  cp.lastfmDone     = cp.lastfmDone     || {}
+  cp.lastfmEnriched = cp.lastfmEnriched || 0
+  cp.lastfmNotFound = cp.lastfmNotFound || 0
+
+  const artists = await loadAllArtists()
+  console.log(`  ${artists.length} artisti in catalogo`)
+
+  for (const a of artists) {
+    const id = a.mb_artist_id
+    if (!id || cp.lastfmDone[id]) continue
+
+    // Gli id sintetici (wd:/sp:/lf:/dg:) non sono MBID validi: per loro Last.fm
+    // va interrogato per nome, non per mbid.
+    const realMbid = /^(wd|sp|lf|dg):/.test(id) ? null : id
+    let info
+    try {
+      info = await lastfmArtistInfo({ mbid: realMbid, name: a.name })
+    } catch (err) {
+      console.warn(`\n  Last.fm ${a.name} failed: ${err.message}`)
+      continue
+    }
+
+    if (!info) {
+      cp.lastfmDone[id] = { notFound: true }
+      cp.lastfmNotFound++
+      saveCheckpoint(cp)
+      continue
+    }
+
+    const base      = Math.max(1, a.relevance || 1)
+    const factor    = lastfmFactor(info.listeners)
+    const newRel    = Math.max(1, Math.round(base * factor))
+    const oldWeight = weightFromRelevance(base)
+    const newWeight = weightFromRelevance(newRel)
+
+    await withRetry('lastfm:updateArtist', async () => {
+      const { error } = await sb.from('artists').update({ relevance: newRel }).eq('mb_artist_id', id)
+      if (error) console.warn('  update artist relevance:', error.message)
+    })
+    await applyLastfmToTracks(id, newWeight, info.tags)
+
+    cp.lastfmDone[id] = {
+      listeners: info.listeners, playcount: info.playcount,
+      factor: +factor.toFixed(2), base, newRel,
+    }
+    cp.lastfmEnriched++
+    saveCheckpoint(cp)
+    process.stdout.write(
+      `\r  ${String(cp.lastfmEnriched).padStart(5)} arricchiti  ${a.name.slice(0, 26).padEnd(26)} ` +
+      `${String(info.listeners).padStart(8)} list  ×${factor.toFixed(2)}  w:${oldWeight}→${newWeight}   `
+    )
+  }
+  console.log(`\n  Last.fm: ${cp.lastfmEnriched} artisti arricchiti, ${cp.lastfmNotFound} non trovati`)
+}
+
+// ── Last.fm — scoperta nuovi artisti (stage OPZIONALE, gated da --lastfm-discover) ──
+// Stesso trattamento duplicati della sessione Wikidata: dedup per mb_artist_id e
+// per nome+paese. geo.getTopArtists dà artisti per paese (con listeners); per i
+// generi usa tag.getTopArtists. Gli artisti con MBID caricano anche le tracce.
+
+const LF_DISCOVER_PER_COUNTRY = 50
+const LF_DISCOVER_PER_TAG     = 30
+
+function lfDiscoveryRelevance(listeners) {
+  // Niente base MB: relevance derivata dal solo pubblico Last.fm (log-scalata),
+  // su scala comparabile a wdRelevance (sitelink×3).
+  return Math.max(1, Math.round(Math.log10((listeners || 0) + 10) * 15))
+}
+
+async function lfTopArtistsByCountry(countryName) {
+  const d = await lfFetch({ method: 'geo.gettopartists', country: countryName, limit: LF_DISCOVER_PER_COUNTRY })
+  return (d?.topartists?.artist || []).map(a => ({
+    name: a.name, mbid: a.mbid || null, listeners: parseInt(a.listeners) || 0,
+  }))
+}
+
+async function lfTopArtistsByTag(tag) {
+  const d = await lfFetch({ method: 'tag.gettopartists', tag, limit: LF_DISCOVER_PER_TAG })
+  return (d?.topartists?.artist || []).map(a => ({
+    name: a.name, mbid: a.mbid || null,
+    // tag.getTopArtists non dà listeners: stima dalla posizione in classifica.
+    rank: parseInt(a['@attr']?.rank) || 999, listeners: 0,
+  }))
+}
+
+async function runLastfmDiscoverStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  LAST.FM — scoperta nuovi artisti (geo + tag)')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!LASTFM_KEY) { console.warn('  LASTFM_API_KEY mancante — salto la scoperta'); return }
+
+  cp.lastfmDiscover     = cp.lastfmDiscover     || {}
+  cp.lastfmDiscoverNew  = cp.lastfmDiscoverNew  || 0
+
+  const existing = await loadExistingArtists()
+  const areaEntries = Object.entries(REGIONS)
+    .filter(([k, v]) => k !== '_comment' && v && Array.isArray(v.musicbrainz_countries))
+
+  for (const [area, region] of areaEntries) {
+    const candidates = []
+    for (const countryName of region.musicbrainz_countries) {
+      const key = `geo::${countryName}`
+      if (cp.lastfmDiscover[key]) continue
+      let top = []
+      try { top = await lfTopArtistsByCountry(countryName) }
+      catch (err) { console.warn(`  geo ${countryName} failed: ${err.message}`); continue }
+      for (const t of top) candidates.push({ ...t, country: countryName })
+      cp.lastfmDiscover[key] = top.length
+      saveCheckpoint(cp)
+    }
+    for (const tag of (region.genre_seeds || [])) {
+      const key = `tag::${tag}`
+      if (cp.lastfmDiscover[key]) continue
+      let top = []
+      try { top = await lfTopArtistsByTag(tag) }
+      catch (err) { console.warn(`  tag ${tag} failed: ${err.message}`); continue }
+      for (const t of top) candidates.push({ ...t, country: null })
+      cp.lastfmDiscover[key] = top.length
+      saveCheckpoint(cp)
+    }
+
+    let added = 0
+    for (const c of candidates) {
+      if (!c.name) continue
+      const nameKey = `${c.name.toLowerCase()}::${(c.country || '').toLowerCase()}`
+      if (c.mbid && existing.mbids.has(c.mbid)) continue
+      if (existing.nameCountry.has(nameKey)) continue
+      const artistId = c.mbid || `lf:${c.name.toLowerCase().replace(/\s+/g, '-')}`
+      if (existing.mbids.has(artistId)) continue
+
+      // Segnale ufficiale: arricchisce listeners (e mbid) anche per i candidati da tag.
+      const info = await lastfmArtistInfo({ mbid: c.mbid, name: c.name })
+      const listeners = info?.listeners || c.listeners || 0
+      const relevance = lfDiscoveryRelevance(listeners)
+      const realMbid  = info?.mbid || c.mbid || null
+
+      await upsertArtist({
+        mb_artist_id: realMbid || artistId,
+        name:         c.name,
+        country:      c.country,
+        macro_area:   area,
+        bio_short:    null,
+        relevance,
+      })
+      existing.mbids.add(realMbid || artistId)
+      existing.nameCountry.add(nameKey)
+
+      if (realMbid) {
+        await processRecordings({
+          name: c.name, mbId: realMbid, country: c.country, area, relevance,
+        }, cp)
+      }
+      added++
+      cp.lastfmDiscoverNew++
+    }
+    saveCheckpoint(cp)
+    console.log(`  ${area.padEnd(20)} +${added} nuovi candidati`)
+  }
+  console.log(`\n  Last.fm scoperta: ${cp.lastfmDiscoverNew} artisti nuovi`)
+}
+
+// ── Last.fm dry-run test (nessuna scrittura) ─────────────────────────────────
+// Per un campione di artisti: recupera il segnale Last.fm, ricostruisce la
+// relevance base da MusicBrainz (recording-count, stessa formula del catalogo)
+// e mostra relevance/weight PRIMA e DOPO la modulazione. Funziona senza .env.local.
+
+const LF_TEST_SAMPLE = [
+  'Fela Kuti', 'Mulatu Astatke', 'Tinariwen', 'Oum Kalthoum',
+  'Caetano Veloso', 'Nusrat Fateh Ali Khan', 'Ali Farka Touré', 'Cesária Évora',
+]
+
+// recording-count da MusicBrainz (proxy della relevance base MB), per mbid o nome.
+async function mbRecordingCount({ mbid, name }) {
+  let id = mbid
+  if (!id && name) {
+    const s = await mbFetch(`/artist?query=${encodeURIComponent(`artist:"${name}"`)}&limit=1&fmt=json`)
+    id = s?.artists?.[0]?.id || null
+  }
+  if (!id) return 0
+  const browse = await mbFetch(`/recording?artist=${id}&limit=1&fmt=json`)
+  return parseInt(browse?.['recording-count']) || 0
+}
+
+async function runLastfmTest(names) {
+  console.log('JamNet — Last.fm test (dry run, nessuna scrittura)\n')
+  if (!LASTFM_KEY) { console.error('  LASTFM_API_KEY mancante in .env.local'); return }
+
+  console.log('  ' + 'artista'.padEnd(24) + '  listeners  factor   relevance(base→new)   weight(old→new)   tag Last.fm')
+  console.log('  ' + '─'.repeat(110))
+  for (const name of names) {
+    const info = await lastfmArtistInfo({ mbid: null, name })
+    if (!info) { console.log('  ' + name.slice(0, 24).padEnd(24) + '  (non trovato su Last.fm)'); continue }
+
+    let base = 1
+    try { base = Math.max(1, await mbRecordingCount({ mbid: info.mbid, name })) } catch { /* best-effort */ }
+
+    const factor = lastfmFactor(info.listeners)
+    const newRel = Math.max(1, Math.round(base * factor))
+    const oldW   = weightFromRelevance(base)
+    const newW   = weightFromRelevance(newRel)
+    console.log(
+      '  ' + name.slice(0, 24).padEnd(24) +
+      '  ' + String(info.listeners).padStart(8) +
+      '   ×' + factor.toFixed(2) +
+      '    ' + String(base).padStart(5) + '→' + String(newRel).padStart(6) +
+      '         ' + String(oldW).padStart(3) + '→' + String(newW).padStart(3) +
+      '          ' + info.tags.slice(0, 4).join(', ')
+    )
+  }
+  console.log('\nFatto (dry run).')
+}
+
+// ── Spotify — scoperta artisti correlati (Client Credentials Flow) ───────────
+// Fonte di SCOPERTA (come Wikidata): fa emergere nomi minori vicini ad artisti
+// già noti in catalogo. Non serve login utente: il Client Credentials Flow
+// scambia client_id/secret per un access token (valido ~1 h, rinnovato in automatico).
+//
+// Approccio a SEMI: lo stage NON gira su tutto il catalogo, ma parte dai semi a
+// relevance più alta (i nomi noti) — da lì related-artists fa affiorare i correlati,
+// tra cui i minori. Girare sull'intero catalogo sarebbe sprecato (i correlati di un
+// artista oscuro sono spesso già noti, o oscuri e ridondanti) e moltiplicherebbe le
+// chiamate API. Numero di semi configurabile con --spotify-seeds=N (default 200).
+//
+// IMPORTANTE: la Web API di Spotify richiede che il PROPRIETARIO dell'app abbia un
+// abbonamento Premium attivo; in mancanza OGNI endpoint dati risponde 403
+// ("Active premium subscription required for the owner of the app"). L'endpoint
+// related-artists è inoltre deprecato da Spotify (27/11/2024) per le app create dopo
+// quella data. Lo stage rileva il 403, lo segnala una volta e prosegue senza
+// interrompere la pipeline (spBlocked).
+
+const SP_TOKEN_ENDPOINT = 'https://accounts.spotify.com/api/token'
+const SP_API            = 'https://api.spotify.com/v1'
+const SP_DELAY_MS       = 200   // ~5 req/s, conservativo (Spotify usa un rate limit a finestra mobile)
+let   spToken    = null
+let   spTokenExp = 0
+let   lastSpCall = 0
+let   spBlocked  = false        // true dopo un 403 (premium/deprecazione): non insistere
+
+// Client Credentials Flow: client_id/secret → access token. Cache fino a scadenza.
+async function spotifyToken() {
+  if (spToken && Date.now() < spTokenExp - 60_000) return spToken
+  const res = await withRetry('spotifyToken', () => fetch(SP_TOKEN_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: 'Basic ' + Buffer.from(`${SPOTIFY_ID}:${SPOTIFY_SECRET}`).toString('base64'),
+    },
+    body: 'grant_type=client_credentials',
+  }))
+  if (!res.ok) throw new Error(`token ${res.status}`)
+  const data = await res.json()
+  spToken    = data.access_token
+  spTokenExp = Date.now() + (data.expires_in || 3600) * 1000
+  return spToken
+}
+
+// fetch verso la Web API: rate-limited, rinnova il token su 401, rispetta
+// Retry-After su 429, segnala (una volta) il blocco 403 premium/deprecazione.
+async function spFetch(path) {
+  if (spBlocked) return { blocked: true }
+  const wait = SP_DELAY_MS - (Date.now() - lastSpCall)
+  if (wait > 0) await sleep(wait)
+  lastSpCall = Date.now()
+  const token = await spotifyToken()
+  let res = await withRetry('spFetch', () => fetch(`${SP_API}${path}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }))
+  if (res.status === 401) {            // token scaduto: rinnova e riprova una volta
+    spToken = null
+    const t2 = await spotifyToken()
+    res = await withRetry('spFetch', () => fetch(`${SP_API}${path}`, { headers: { Authorization: `Bearer ${t2}` } }))
+  }
+  if (res.status === 429) {            // rate limit: rispetta l'header Retry-After (secondi)
+    const retry = parseInt(res.headers.get('retry-after') || '5')
+    console.warn(`  Spotify 429 (rate limit) — wait ${retry + 1}s`)
+    await sleep((retry + 1) * 1000)
+    return spFetch(path)
+  }
+  if (res.status === 403) {
+    const body = await res.text().catch(() => '')
+    spBlocked = true
+    console.warn(`  Spotify 403 — ${body.slice(0, 140)}`)
+    return { blocked: true }
+  }
+  if (!res.ok) return null            // 404 e altri: nessun risultato
+  return res.json()
+}
+
+// Trova l'artista Spotify corrispondente a un nome di catalogo (match per nome).
+async function spotifySearchArtist(name) {
+  const d = await spFetch(`/search?q=${encodeURIComponent(name)}&type=artist&limit=1`)
+  if (d?.blocked) return { blocked: true }
+  return d?.artists?.items?.[0] || null
+}
+
+async function spotifyRelatedArtists(spotifyId) {
+  const d = await spFetch(`/artists/${spotifyId}/related-artists`)
+  if (d?.blocked) return { blocked: true }
+  return d?.artists || []
+}
+
+// Relevance per artisti scoperti via Spotify: dai follower (log-scalata), su scala
+// comparabile a wdRelevance (sitelink×3) e lfDiscoveryRelevance.
+function spRelevance(followers) {
+  return Math.max(1, Math.round(Math.log10((followers || 0) + 10) * 15))
+}
+
+// Semi: gli artisti del catalogo a relevance più alta. Da questi Spotify trova i
+// correlati, tra cui emergono i nomi minori vicini.
+async function loadSeedArtists(limit) {
+  const { data, error } = await sb.from('artists')
+    .select('mb_artist_id, name, country, macro_area, relevance')
+    .order('relevance', { ascending: false })
+    .limit(limit)
+  if (error) { console.warn('  loadSeedArtists:', error.message); return [] }
+  return data || []
+}
+
+// Stage Spotify: per ogni seme cerca l'artista su Spotify, ne prende i correlati e
+// inserisce quelli non ancora in catalogo. Stesso trattamento anti-duplicati di
+// Wikidata (per id sintetico "sp:<spotifyId>" e per nome+paese) e stessa integrazione
+// delle sessioni precedenti (checkpoint cp.spotifyDone[seedId]). Gli artisti
+// "solo Spotify" non hanno tracce MB: restano coperti quando emergono altrove (iTunes),
+// coerentemente con gli artisti solo-Wikidata.
+async function runSpotifyStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  SPOTIFY — scoperta artisti correlati (da semi ad alta relevance)')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!SPOTIFY_ID || !SPOTIFY_SECRET) {
+    console.warn('  SPOTIFY_CLIENT_ID/SECRET mancanti in .env.local — salto lo stage Spotify')
+    return
+  }
+  try { await spotifyToken() }
+  catch (e) { console.warn(`  Spotify auth fallita (${e.message}) — salto lo stage`); return }
+
+  cp.spotifyDone      = cp.spotifyDone      || {}
+  cp.spotifyNew       = cp.spotifyNew       || 0
+  cp.spotifySeedsDone = cp.spotifySeedsDone || 0
+
+  const existing = await loadExistingArtists()
+  const seeds = await loadSeedArtists(SP_SEEDS)
+  console.log(`  ${seeds.length} semi (top per relevance, soglia ${SP_SEEDS})`)
+
+  for (const seed of seeds) {
+    const seedId = seed.mb_artist_id
+    if (!seedId || cp.spotifyDone[seedId]) continue
+    if (spBlocked) { console.warn('\n  Spotify bloccato (403) — interrompo lo stage'); break }
+
+    let sp
+    try { sp = await spotifySearchArtist(seed.name) }
+    catch (err) { console.warn(`\n  Spotify search ${seed.name} failed: ${err.message}`); continue }
+    if (sp?.blocked) break
+    if (!sp) { cp.spotifyDone[seedId] = { noMatch: true }; saveCheckpoint(cp); continue }
+
+    let related
+    try { related = await spotifyRelatedArtists(sp.id) }
+    catch (err) { console.warn(`\n  Spotify related ${seed.name} failed: ${err.message}`); continue }
+    if (related?.blocked) break
+
+    let added = 0
+    for (const r of (related || [])) {
+      if (!r.name || !r.id) continue
+      const spKey   = `sp:${r.id}`
+      const nameKey = `${r.name.toLowerCase()}::${(seed.country || '').toLowerCase()}`
+      if (existing.mbids.has(spKey)) continue
+      if (existing.nameCountry.has(nameKey)) continue
+
+      await upsertArtist({
+        mb_artist_id: spKey,
+        name:         r.name,
+        country:      seed.country,      // scena vicina: eredita il paese del seme
+        macro_area:   seed.macro_area,
+        bio_short:    null,
+        relevance:    spRelevance(r.followers?.total),
+      })
+      existing.mbids.add(spKey)
+      existing.nameCountry.add(nameKey)
+      added++
+      cp.spotifyNew++
+    }
+    cp.spotifyDone[seedId] = { sp: sp.id, related: (related || []).length, added }
+    cp.spotifySeedsDone++
+    saveCheckpoint(cp)
+    process.stdout.write(
+      `\r  ${String(cp.spotifySeedsDone).padStart(4)} semi  ${seed.name.slice(0, 26).padEnd(26)} +${added} correlati nuovi   `
+    )
+  }
+  console.log(`\n  Spotify: ${cp.spotifyNew} artisti correlati nuovi da ${cp.spotifySeedsDone} semi`)
+}
+
+// ── Spotify dry-run test (nessuna scrittura) ─────────────────────────────────
+// Autentica (Client Credentials), cerca un campione di artisti e stampa i correlati.
+// Funziona senza .env.local (credenziali da env). Riporta chiaramente se la Web API
+// è bloccata (403 premium/deprecazione), distinguendolo dall'auth (che resta valida).
+
+const SP_TEST_SAMPLE = [
+  'Fela Kuti', 'Tinariwen', 'Mulatu Astatke',
+  'Cesária Évora', 'Ali Farka Touré', 'Caetano Veloso',
+]
+
+async function runSpotifyTest(names) {
+  console.log('JamNet — Spotify test (dry run, nessuna scrittura)\n')
+  if (!SPOTIFY_ID || !SPOTIFY_SECRET) { console.error('  SPOTIFY_CLIENT_ID/SECRET mancanti'); return }
+  try { await spotifyToken(); console.log('  Auth Client Credentials: OK (access token ottenuto)\n') }
+  catch (e) { console.error(`  Auth fallita: ${e.message}`); return }
+
+  let totalRelated = 0, matched = 0
+  for (const name of names) {
+    const sp = await spotifySearchArtist(name)
+    if (sp?.blocked) {
+      console.log('\n  ⚠ Web API bloccata (403): lo stage non può scoprire correlati.')
+      console.log('    Cause tipiche:')
+      console.log('    · il proprietario dell\'app non ha un abbonamento Spotify Premium attivo;')
+      console.log('    · related-artists è deprecato per le app create dopo il 27/11/2024.')
+      console.log('    L\'autenticazione invece funziona: il token viene rilasciato.')
+      return
+    }
+    if (!sp) { console.log('  ' + name.padEnd(24) + '  (non trovato su Spotify)'); continue }
+    const related = await spotifyRelatedArtists(sp.id)
+    if (related?.blocked) { console.log('\n  ⚠ related-artists bloccato (403) — vedi nota sopra.'); return }
+    matched++
+    totalRelated += related.length
+    console.log(`  ${name.padEnd(24)} → "${sp.name}"  pop ${sp.popularity}  ${sp.followers?.total || 0} follower`)
+    console.log(`    ${related.length} correlati: ` + related.slice(0, 8).map(r => r.name).join(', '))
+  }
+  console.log(`\n  ${matched}/${names.length} semi risolti, ${totalRelated} correlati totali. Fatto (dry run).`)
+}
+
+// ── Discogs — uscite indipendenti/locali assenti da MusicBrainz ──────────────
+// Fonte di RIEMPIMENTO per i buchi del catalogo: Discogs indicizza moltissime
+// uscite locali/indipendenti (vinili, cassette, piccole etichette) che MusicBrainz
+// spesso non ha. Si interroga per PAESE + ANNO sulle aree sotto soglia (sez. 3.2),
+// decennio per decennio.
+//
+// Niente mb_recording_id per i brani Discogs: si usano chiavi sintetiche, coerenti
+// con la convenzione wd:/sp:/lf: già in uso —
+//   artista:  mb_artist_id   = "dg:<discogs_artist_id>"
+//   traccia:  mb_recording_id = "dg:<release_id>:<position>"
+// Anti-duplicati (deciso col proprietario): match STRETTO su titolo+artista+anno
+// normalizzati contro il catalogo esistente (vedi loadExistingTrackKeys).
+// Nota: l'anno Discogs è quello della stampa, l'anno MB è quello di prima
+// pubblicazione: con match stretto lo stesso brano con anni diversi NON viene
+// fuso (può quindi entrare una seconda volta) — comportamento accettato.
+//
+// Rate limit: 60 richieste/minuto con token autenticato → 1 richiesta ~ogni 1.1 s.
+// La ricerca dà solo "Artista – Album"; per i veri titoli dei brani e per nomi
+// artista puliti si scarica il dettaglio della release (1 richiesta ciascuna).
+
+const DISCOGS_API        = 'https://api.discogs.com'
+const DG_DELAY_MS        = 1100   // 60 req/min autenticato → ~1 req ogni 1.1 s
+const DG_PER_PAGE        = 100
+const DG_PAGES_PER_YEAR  = 3      // max 300 release/anno: tetto al costo di ricerca
+const DG_RELEASES_PER_CD = 25     // max dettagli release per (paese, decennio) per run
+const DG_DETAILS_PER_RUN = 800    // budget complessivo di dettagli release per run (~15 min)
+const DG_THRESHOLD       = 200    // soglia brani riproducibili per area (sez. 3.2)
+let lastDgCall = 0
+
+async function dgFetch(path) {
+  if (!DISCOGS_TOKEN) return null
+  const wait = DG_DELAY_MS - (Date.now() - lastDgCall)
+  if (wait > 0) await sleep(wait)
+  lastDgCall = Date.now()
+  const sep = path.includes('?') ? '&' : '?'
+  const url = `${DISCOGS_API}${path}${sep}token=${DISCOGS_TOKEN}`
+  const res = await withRetry('dgFetch', () => fetch(url, {
+    headers: { 'User-Agent': 'JamNet/1.0 (edoardoguerra88@gmail.com)' },
+  }))
+  if (res.status === 429) {            // rate limit: rispetta Retry-After (secondi)
+    const retry = parseInt(res.headers.get('retry-after') || '60')
+    console.warn(`  Discogs 429 (rate limit) — wait ${retry}s`)
+    await sleep((retry || 60) * 1000)
+    return dgFetch(path)
+  }
+  if (!res.ok) return null
+  return res.json()
+}
+
+async function dgSearchReleases(country, year, page) {
+  const d = await dgFetch(`/database/search?type=release&country=${encodeURIComponent(country)}&year=${year}&per_page=${DG_PER_PAGE}&page=${page}`)
+  return d || { results: [], pagination: { pages: 0 } }
+}
+
+async function dgReleaseDetail(id) {
+  return dgFetch(`/releases/${id}`)
+}
+
+// Pulisce i nomi artista Discogs: toglie il suffisso di disambiguazione " (123)"
+// e l'asterisco delle varianti ortografiche ("Nome*").
+function cleanDiscogsName(name) {
+  return (name || '')
+    .replace(/\s*\(\d+\)\s*$/, '')
+    .replace(/\*+$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Tag dai generi/stili Discogs: gli "styles" sono più specifici dei "genres".
+function dgTags(detail) {
+  const out = []
+  const seen = new Set()
+  for (const t of [...(detail.styles || []), ...(detail.genres || [])]) {
+    const k = (t || '').toLowerCase().trim()
+    if (!k || seen.has(k)) continue
+    seen.add(k); out.push(k)
+    if (out.length >= 8) break
+  }
+  return out
+}
+
+// Relevance base per artisti Discogs: proxy dal n. di brani trovati (Last.fm la
+// modula poi). Scala comparabile a wdRelevance/spRelevance.
+function dgRelevance(trackCount) {
+  return Math.max(1, Math.min(300, (trackCount || 1) * 5))
+}
+
+// Normalizzazione per il match anti-duplicati (titolo/artista): minuscolo, senza
+// diacritici, solo alfanumerici e spazi singoli.
+function normKey(s) {
+  return (s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Chiave-contenuto STRETTA per il dedup dei brani: titolo+artista+anno (decisa
+// col proprietario). L'anno entra nella chiave: due brani omonimi dello stesso
+// artista ma di anni diversi restano distinti.
+function trackContentKey(title, artist, year) {
+  return `${normKey(title)}::${normKey(artist)}::${year || ''}`
+}
+
+// Artisti della release, puliti e deduplicati per id; scarta "Various" (compilation).
+function releaseArtistList(detail) {
+  const out = []
+  const seen = new Set()
+  for (const a of (detail.artists || [])) {
+    const name = cleanDiscogsName(a.name)
+    if (!name || /^various$/i.test(name)) continue
+    if (a.id && seen.has(a.id)) continue
+    if (a.id) seen.add(a.id)
+    out.push({ id: a.id, name })
+  }
+  return out
+}
+
+// Estrae da Discogs i brani per (paese, decennio): cerca le release di ogni anno
+// del decennio, scarica i dettagli (fino a maxDetails) e restituisce artisti e
+// brani normalizzati. Condiviso da stage e dry-run.
+async function collectDiscogsTracks(country, decade, maxDetails) {
+  const releases = []
+  const seenRel = new Set()
+  for (let y = decade; y < decade + 10; y++) {
+    let page = 1, pages = 1
+    do {
+      const d = await dgSearchReleases(country, y, page)
+      for (const r of (d.results || [])) {
+        if (r.id && !seenRel.has(r.id)) { seenRel.add(r.id); releases.push({ id: r.id, year: parseInt(r.year) || y }) }
+      }
+      pages = d.pagination?.pages || 1
+      page++
+    } while (page <= pages && page <= DG_PAGES_PER_YEAR)
+  }
+
+  const artists = new Map()   // dgId → { id, name, count }
+  const tracks = []
+  let details = 0
+  for (const rel of releases) {
+    if (details >= maxDetails) break
+    const detail = await dgReleaseDetail(rel.id)
+    details++
+    if (!detail) continue
+    const ras = releaseArtistList(detail)
+    if (!ras.length) continue              // compilation/Various: salta
+    const primary = ras[0]
+    const tags = dgTags(detail)
+    const year = parseInt(detail.year) || rel.year || null
+    let count = 0
+    for (const t of (detail.tracklist || [])) {
+      if (!t.title) continue
+      if (t.type_ && t.type_ !== 'track') continue   // salta heading/index
+      if (JUNK_RE.test(t.title)) continue
+      const tArtist = (t.artists?.length)
+        ? t.artists.map(a => cleanDiscogsName(a.name)).filter(Boolean).join(' & ')
+        : primary.name
+      tracks.push({
+        releaseId: rel.id,
+        position:  t.position || `t${tracks.length}`,
+        title:     t.title.trim(),
+        artistName: tArtist || primary.name,
+        artistId:  primary.id,
+        year, tags,
+      })
+      count++
+    }
+    const ar = artists.get(primary.id) || { id: primary.id, name: primary.name, count: 0 }
+    ar.count += count
+    artists.set(primary.id, ar)
+  }
+  return { artists, tracks, releases: releases.length, details }
+}
+
+// Conteggio brani riproducibili per area (stessa logica di logSummary).
+async function areaPlayableCount(area) {
+  const { count } = await sb.from('tracks').select('*', { count: 'exact', head: true })
+    .eq('macro_area', area).or('youtube_video_id.not.is.null,itunes_preview_url.not.is.null')
+  return count || 0
+}
+
+// Chiavi-contenuto dei brani già in catalogo, per il dedup stretto. Paginato.
+async function loadExistingTrackKeys() {
+  const keys = new Set()
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('tracks')
+      .select('title, artist_name, year')
+      .range(from, from + PAGE - 1)
+    if (error || !data?.length) break
+    for (const t of data) keys.add(trackContentKey(t.title, t.artist_name, t.year))
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return keys
+}
+
+// Stage Discogs: per ogni area sotto soglia (sez. 3.2), interroga Discogs per
+// (paese, decennio), deduplica artisti (per dg:id e nome+paese) e brani (stretto
+// titolo+artista+anno), inserisce i nuovi e tenta l'abbinamento riproducibile
+// (YouTube se resta quota, altrimenti anteprima iTunes). Checkpoint per (area,
+// paese, decennio) e budget di dettagli per run, così i rilanci riprendono.
+async function runDiscogsStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  DISCOGS — uscite indipendenti/locali per le aree sotto soglia')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!DISCOGS_TOKEN) { console.warn('  DISCOGS_TOKEN mancante in .env.local — salto lo stage Discogs'); return }
+
+  cp.discogsDone       = cp.discogsDone       || {}
+  cp.discogsNewArtists = cp.discogsNewArtists || 0
+  cp.discogsNewTracks  = cp.discogsNewTracks  || 0
+
+  const existing  = await loadExistingArtists()
+  const trackKeys = await loadExistingTrackKeys()
+  const areaEntries = Object.entries(REGIONS)
+    .filter(([k, v]) => k !== '_comment' && v && Array.isArray(v.musicbrainz_countries))
+
+  let detailsBudget = DG_DETAILS_PER_RUN
+  for (const [area, region] of areaEntries) {
+    const playable = await areaPlayableCount(area)
+    if (playable >= DG_THRESHOLD) {
+      console.log(`  ${area.padEnd(20)} ${String(playable).padStart(4)} riproducibili ≥ ${DG_THRESHOLD} — salto`)
+      continue
+    }
+    console.log(`\n  ▸ ${area} (${playable} riproducibili < ${DG_THRESHOLD})`)
+
+    for (const country of region.musicbrainz_countries) {
+      for (let decade = 1950; decade <= 2020; decade += 10) {
+        if (detailsBudget <= 0) {
+          console.log('  Budget dettagli release esaurito per questo run — rilancia per continuare.')
+          console.log(`\n  Discogs: +${cp.discogsNewArtists} artisti, +${cp.discogsNewTracks} brani (totale cumulato)`)
+          return
+        }
+        const key = `${area}::${country}::${decade}`
+        if (cp.discogsDone[key]) continue
+
+        let res
+        try { res = await collectDiscogsTracks(country, decade, Math.min(DG_RELEASES_PER_CD, detailsBudget)) }
+        catch (err) { console.warn(`  ${country} ${decade}s failed: ${err.message}`); continue }
+        detailsBudget -= res.details
+
+        let addedA = 0
+        for (const a of res.artists.values()) {
+          const dgId    = `dg:${a.id}`
+          const nameKey = `${a.name.toLowerCase()}::${country.toLowerCase()}`
+          if (existing.mbids.has(dgId) || existing.nameCountry.has(nameKey)) continue
+          await upsertArtist({
+            mb_artist_id: dgId, name: a.name, country, macro_area: area,
+            bio_short: null, relevance: dgRelevance(a.count),
+          })
+          existing.mbids.add(dgId)
+          existing.nameCountry.add(nameKey)
+          addedA++; cp.discogsNewArtists++
+        }
+
+        let addedT = 0
+        for (const t of res.tracks) {
+          const ck = trackContentKey(t.title, t.artistName, t.year)
+          if (trackKeys.has(ck)) continue       // dedup stretto titolo+artista+anno
+          trackKeys.add(ck)
+
+          const dgArtistId = `dg:${t.artistId}`
+          const artRel = res.artists.get(t.artistId)?.count || 1
+
+          let ytId = null
+          if (cp.ytSearchesDone < YT_QUOTA_PER_RUN) ytId = await youtubeSearch(`${t.artistName} ${t.title}`, cp)
+          let itunesData = null
+          if (!ytId) itunesData = await itunesSearch(t.artistName, t.title)
+
+          await upsertTrack({
+            mb_recording_id:    `dg:${t.releaseId}:${t.position}`,
+            title:              t.title,
+            artist_name:        t.artistName,
+            // FK valida solo se l'artista dg: è stato inserito; altrimenti null
+            // (l'artista esisteva già sotto altro id: il brano resta attribuito per nome).
+            artist_mb_id:       existing.mbids.has(dgArtistId) ? dgArtistId : null,
+            country, macro_area: area, year: t.year,
+            youtube_video_id:   ytId,
+            itunes_track_id:    itunesData?.itunes_track_id || null,
+            itunes_preview_url: itunesData?.itunes_preview_url || null,
+            artwork_url:        itunesData?.artwork_url || null,
+            isrc:               itunesData?.isrc || null,
+            tags:               t.tags,
+            weight:             weightFromRelevance(dgRelevance(artRel)),
+          })
+          addedT++; cp.discogsNewTracks++
+        }
+
+        cp.discogsDone[key] = { releases: res.releases, details: res.details, addedA, addedT }
+        saveCheckpoint(cp)
+        if (addedA || addedT) console.log(`    ${country} ${decade}s: +${addedA} artisti, +${addedT} brani  (budget dettagli ${detailsBudget})`)
+      }
+    }
+  }
+  console.log(`\n  Discogs: +${cp.discogsNewArtists} artisti, +${cp.discogsNewTracks} brani (totale cumulato)`)
+}
+
+// ── Discogs dry-run test (nessuna scrittura) ─────────────────────────────────
+// Per ogni (paese, decennio): cerca le release, ne estrae i brani (fino al cap)
+// e riporta quante release/brani/artisti emergono, e quanti artisti NON compaiono
+// nella ricerca per area di MusicBrainz (proxy del valore aggiunto, come il test
+// Wikidata). Funziona senza Supabase: i conteggi sono potenziali (il dedup contro
+// il catalogo reale avviene in scrittura).
+
+const DG_TEST_MAX_DETAILS = 20
+
+async function runDiscogsTest(specs) {
+  console.log('JamNet — Discogs test (dry run, nessuna scrittura)\n')
+  if (!DISCOGS_TOKEN) { console.error('  DISCOGS_TOKEN mancante in .env.local'); return }
+
+  for (const { country, decade } of specs) {
+    const area = Object.keys(REGIONS).find(
+      k => k !== '_comment' && REGIONS[k].musicbrainz_countries?.includes(country)
+    ) || '—'
+
+    let res
+    try { res = await collectDiscogsTracks(country, decade, DG_TEST_MAX_DETAILS) }
+    catch (err) { console.log(`\n── ${country} ${decade}s: errore ${err.message}`); continue }
+
+    // Confronto con la MB area-search (stesso paese): proxy del valore aggiunto.
+    let mbNames = new Set()
+    try {
+      const p0 = await fetchArtistsForCountry(country, 0)
+      const p1 = p0.length === 100 ? await fetchArtistsForCountry(country, 100) : []
+      mbNames = new Set([...p0, ...p1].map(a => normKey(a.name)))
+    } catch { /* confronto best-effort */ }
+    const novel = [...res.artists.values()].filter(a => !mbNames.has(normKey(a.name)))
+
+    console.log(`\n── ${country} ${decade}s  (${area}) ──`)
+    console.log(`   release Discogs trovate (anni del decennio):  ${res.releases}`)
+    console.log(`   dettagli release scaricati (cap ${DG_TEST_MAX_DETAILS}):          ${res.details}`)
+    console.log(`   brani estratti:                               ${res.tracks.length}`)
+    console.log(`   artisti distinti:                             ${res.artists.size}`)
+    console.log(`   MB area-search (top ~200):                    ${mbNames.size} nomi`)
+    console.log(`   artisti NON nella MB area-search:             ${novel.length}  ← valore aggiunto`)
+    if (novel.length) {
+      console.log('   esempi artisti nuovi:')
+      for (const a of novel.slice(0, 8)) console.log(`     · ${a.name.slice(0, 40).padEnd(40)} (~${a.count} brani nel campione)`)
+    }
+    if (res.tracks.length) {
+      console.log('   esempi brani:')
+      for (const t of res.tracks.slice(0, 8)) console.log(`     · ${(t.artistName + ' — ' + t.title).slice(0, 60)}  [${t.year || '?'}]`)
+    }
+  }
+  console.log('\nFatto (dry run). I conteggi sono potenziali: in scrittura si applica il dedup stretto titolo+artista+anno.')
+}
+
 // ── Supabase upserts ────────────────────────────────────────────────────────
 
 async function upsertArtist(row) {
@@ -233,6 +1295,55 @@ async function upsertTrack(row) {
     const { error } = await sb.from('tracks').upsert(row, { onConflict: 'mb_recording_id' })
     if (error) console.warn('  upsertTrack:', error.message)
   })
+}
+
+// ── Process one artist's MB recordings → tracks ──────────────────────────────
+// Condiviso tra lo stage MusicBrainz e lo stage Wikidata (per artisti con MBID).
+
+async function processRecordings({ name, mbId, country, area, relevance }, cp) {
+  const recordings = await fetchRecordingsForArtist(mbId)
+  let tracksAdded = 0
+  for (const rec of recordings) {
+    if (!rec.id || !rec.title) continue
+    if (MB_UNKNOWN_RE.test(rec.title)) continue
+    if (JUNK_RE.test(rec.title)) continue
+
+    const year = getFirstYear(rec)
+    const tags = getTags(rec)
+
+    let ytId = null
+    if (cp.ytSearchesDone < YT_QUOTA_PER_RUN) {
+      ytId = await youtubeSearch(`${name} ${rec.title}`, cp)
+    }
+
+    let itunesData = null
+    if (!ytId) {
+      itunesData = await itunesSearch(name, rec.title)
+    }
+
+    try {
+      await upsertTrack({
+        mb_recording_id:    rec.id,
+        title:              rec.title,
+        artist_name:        name,
+        artist_mb_id:       mbId,
+        country,
+        macro_area:         area,
+        year,
+        youtube_video_id:   ytId,
+        itunes_track_id:    itunesData?.itunes_track_id || null,
+        itunes_preview_url: itunesData?.itunes_preview_url || null,
+        artwork_url:        itunesData?.artwork_url || null,
+        isrc:               itunesData?.isrc || null,
+        tags,
+        weight: weightFromRelevance(relevance),
+      })
+      tracksAdded++
+    } catch (err) {
+      console.error(`\n  Skipping track "${rec.title}": ${err.message}`)
+    }
+  }
+  return tracksAdded
 }
 
 // ── Resolve unmatched tracks ────────────────────────────────────────────────
@@ -273,6 +1384,154 @@ async function resolveUnmatched(cp) {
   }
 }
 
+// ── Wikidata stage ───────────────────────────────────────────────────────────
+
+// Carica gli artisti già in catalogo per la deduplica: per mb_artist_id e per
+// nome+paese (minuscolo). Paginato per superare il limite di 1000 righe di PostgREST.
+async function loadExistingArtists() {
+  const mbids = new Set()
+  const nameCountry = new Set()
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('artists')
+      .select('mb_artist_id, name, country')
+      .range(from, from + PAGE - 1)
+    if (error || !data?.length) break
+    for (const a of data) {
+      if (a.mb_artist_id) mbids.add(a.mb_artist_id)
+      nameCountry.add(`${(a.name || '').toLowerCase()}::${(a.country || '').toLowerCase()}`)
+    }
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return { mbids, nameCountry }
+}
+
+// Per ogni paese (codice ISO in regions.json): interroga Wikidata, deduplica
+// contro il catalogo, inserisce gli artisti nuovi.
+//  - con MusicBrainz ID (P434): mb_artist_id = MBID reale → si collega alle righe MB
+//    e ne carica anche le registrazioni (tracce) tramite il pipeline condiviso.
+//  - senza MBID ("solo Wikidata"): mb_artist_id sintetico "wd:<QID>" — coerente con
+//    lo schema (la PK resta text non-null) e marca la provenienza. Nessuna traccia MB.
+async function runWikidataStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  WIKIDATA — artisti complementari per paese')
+  console.log('════════════════════════════════════════════════════════════')
+
+  cp.wikidataDone = cp.wikidataDone || {}
+  cp.wikidataNewArtists = cp.wikidataNewArtists || 0
+  cp.wikidataNewWdOnly  = cp.wikidataNewWdOnly  || 0
+
+  const existing = await loadExistingArtists()
+  const areaEntries = Object.entries(REGIONS)
+    .filter(([k, v]) => k !== '_comment' && v && Array.isArray(v.countries))
+
+  for (const [area, { countries }] of areaEntries) {
+    for (const iso of countries) {
+      const key = `${area}::${iso}`
+      if (cp.wikidataDone[key]) continue
+
+      let found = []
+      try {
+        found = await fetchArtistsFromWikidata(iso)
+      } catch (err) {
+        console.warn(`  Wikidata ${iso} failed: ${err.message}`)
+        continue
+      }
+
+      let added = 0, linked = 0, wdOnly = 0
+      for (const a of found) {
+        const nameKey = `${a.name.toLowerCase()}::${(a.countryLabel || '').toLowerCase()}`
+        if (a.mbid && existing.mbids.has(a.mbid)) continue
+        if (existing.nameCountry.has(nameKey)) continue
+
+        const artistId = a.mbid || `wd:${a.qid}`
+        if (existing.mbids.has(artistId)) continue
+
+        const bio = a.enwiki ? await fetchWikiBio(a.enwiki) : null
+        await upsertArtist({
+          mb_artist_id: artistId,
+          name:         a.name,
+          country:      a.countryLabel,
+          macro_area:   area,
+          bio_short:    bio,
+          relevance:    wdRelevance(a.sitelinks),
+        })
+        existing.mbids.add(artistId)
+        existing.nameCountry.add(nameKey)
+
+        // Artisti collegati a MusicBrainz: carica anche le loro registrazioni.
+        if (a.mbid) {
+          await processRecordings({
+            name: a.name, mbId: a.mbid, country: a.countryLabel, area,
+            relevance: wdRelevance(a.sitelinks),
+          }, cp)
+          linked++
+        } else {
+          wdOnly++
+        }
+        added++
+        cp.wikidataNewArtists++
+        if (!a.mbid) cp.wikidataNewWdOnly++
+      }
+
+      cp.wikidataDone[key] = { found: found.length, added, linked, wdOnly }
+      saveCheckpoint(cp)
+      console.log(`  ${iso} (${area}): ${String(found.length).padStart(3)} found → ${added} new (${linked} MB-linked, ${wdOnly} Wikidata-only)`)
+    }
+  }
+  console.log(`\n  Wikidata totale: ${cp.wikidataNewArtists} artisti nuovi (${cp.wikidataNewWdOnly} solo Wikidata)`)
+}
+
+// ── Wikidata dry-run test (nessuna scrittura) ────────────────────────────────
+// Riporta, per ogni paese: artisti trovati su Wikidata, quanti collegati a MB,
+// quanti "solo Wikidata", e quanti NON compaiono nella ricerca per area di MB
+// (= valore aggiunto netto della fonte). Funziona senza .env.local.
+async function runWikidataTest(isoList) {
+  console.log('JamNet — Wikidata test (dry run, nessuna scrittura)\n')
+  for (const iso of isoList) {
+    const area = Object.keys(REGIONS).find(
+      k => k !== '_comment' && REGIONS[k].countries?.includes(iso)
+    ) || '—'
+
+    const found = await fetchArtistsFromWikidata(iso)
+    const linked = found.filter(a => a.mbid)
+    const wdOnly = found.filter(a => !a.mbid)
+
+    // Confronto con la ricerca per area di MusicBrainz (stesso nome paese di Wikidata).
+    const countryLabel = found[0]?.countryLabel || iso
+    let mbNames = new Set()
+    try {
+      const p0 = await fetchArtistsForCountry(countryLabel, 0)
+      const p1 = p0.length === 100 ? await fetchArtistsForCountry(countryLabel, 100) : []
+      mbNames = new Set([...p0, ...p1].map(a => (a.name || '').toLowerCase()))
+    } catch { /* ignora: confronto best-effort */ }
+
+    const novelToMb = found.filter(a => !mbNames.has(a.name.toLowerCase()))
+
+    console.log(`\n── ${iso}  (${area})  paese Wikidata: ${countryLabel} ──`)
+    console.log(`   artisti su Wikidata:        ${found.length}`)
+    console.log(`   con MusicBrainz ID (P434):  ${linked.length}`)
+    console.log(`   solo Wikidata (no MBID):    ${wdOnly.length}`)
+    console.log(`   MB area-search (top ~200):  ${mbNames.size} nomi`)
+    console.log(`   NON nella MB area-search:   ${novelToMb.length}  ← candidati nuovi`)
+    console.log('   top per sitelink:')
+    for (const a of found.slice(0, 8)) {
+      const tag = a.mbid ? '[MB]' : '[WD-only]'
+      console.log(`     ${String(a.sitelinks).padStart(3)}  ${a.name.slice(0, 32).padEnd(32)} ${tag}`)
+    }
+    if (novelToMb.length) {
+      console.log('   esempi non trovati dalla MB area-search:')
+      for (const a of novelToMb.slice(0, 6)) {
+        const tag = a.mbid ? '[MB-linked]' : '[WD-only]'
+        console.log(`     · ${a.name.slice(0, 36).padEnd(36)} sitelinks=${String(a.sitelinks).padStart(3)} ${tag}`)
+      }
+    }
+  }
+  console.log('\nFatto (dry run).')
+}
+
 // ── Log summary ─────────────────────────────────────────────────────────────
 
 async function logSummary() {
@@ -292,6 +1551,17 @@ async function logSummary() {
       .gte('year', d).lt('year', d + 10).or('youtube_video_id.not.is.null,itunes_preview_url.not.is.null')
     console.log(`    ${d}s: ${count || 0} playable tracks`)
   }
+
+  // Provenienza artisti: MusicBrainz vs Wikidata-only (mb_artist_id = "wd:...")
+  console.log('\n  Artists by source:')
+  const { count: artistsTotal } = await sb.from('artists').select('*', { count: 'exact', head: true })
+  const { count: wdOnly }       = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'wd:%')
+  console.log(`    total: ${artistsTotal || 0}   ·   Wikidata-only: ${wdOnly || 0}   ·   MusicBrainz-linked: ${(artistsTotal || 0) - (wdOnly || 0)}`)
+  for (const area of areaNames) {
+    const { count: aWd } = await sb.from('artists').select('*', { count: 'exact', head: true })
+      .eq('macro_area', area).like('mb_artist_id', 'wd:%')
+    if (aWd) console.log(`      ${area.padEnd(20)} +${aWd} Wikidata-only`)
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -304,7 +1574,16 @@ async function main() {
 
   const areaEntries = Object.entries(REGIONS).filter(([, v]) => v && Array.isArray(v.musicbrainz_countries))
 
-  for (const [area, { musicbrainz_countries: mbCountries }] of areaEntries) {
+  const runMB = !WD_ONLY && !LF_ONLY && !SP_ONLY
+  const runWD = !SKIP_WD && !LF_ONLY && !SP_ONLY
+  const runLF = !SKIP_LF && !WD_ONLY && !SP_ONLY
+  const runSP = !SKIP_SP && !WD_ONLY && !LF_ONLY
+
+  if (WD_ONLY) console.log('\n(--wikidata-only: salto MusicBrainz, Last.fm e Spotify)')
+  if (LF_ONLY) console.log('\n(--lastfm-only: salto MusicBrainz, Wikidata e Spotify)')
+  if (SP_ONLY) console.log('\n(--spotify-only: salto MusicBrainz, Wikidata e Last.fm)')
+
+  for (const [area, { musicbrainz_countries: mbCountries }] of (runMB ? areaEntries : [])) {
     if (cp.completedAreas.includes(area)) {
       console.log(`\nSkipping ${area} (already completed)`)
       continue
@@ -341,48 +1620,9 @@ async function main() {
               relevance,
             })
 
-            const recordings = await fetchRecordingsForArtist(mbId)
-            let tracksAdded = 0
-            for (const rec of recordings) {
-              if (!rec.id || !rec.title) continue
-              if (MB_UNKNOWN_RE.test(rec.title)) continue
-              if (JUNK_RE.test(rec.title)) continue
-
-              const year = getFirstYear(rec)
-              const tags = getTags(rec)
-
-              let ytId = null
-              if (cp.ytSearchesDone < YT_QUOTA_PER_RUN) {
-                ytId = await youtubeSearch(`${artist.name} ${rec.title}`, cp)
-              }
-
-              let itunesData = null
-              if (!ytId) {
-                itunesData = await itunesSearch(artist.name, rec.title)
-              }
-
-              try {
-                await upsertTrack({
-                  mb_recording_id:   rec.id,
-                  title:             rec.title,
-                  artist_name:       artist.name,
-                  artist_mb_id:      mbId,
-                  country:           countryName,
-                  macro_area:        area,
-                  year,
-                  youtube_video_id:  ytId,
-                  itunes_track_id:   itunesData?.itunes_track_id || null,
-                  itunes_preview_url: itunesData?.itunes_preview_url || null,
-                  artwork_url:       itunesData?.artwork_url || null,
-                  isrc:              itunesData?.isrc || null,
-                  tags,
-                  weight: Math.max(1, Math.min(100, Math.ceil(relevance / 10))),
-                })
-                tracksAdded++
-              } catch (err) {
-                console.error(`\n  Skipping track "${rec.title}": ${err.message}`)
-              }
-            }
+            const tracksAdded = await processRecordings({
+              name: artist.name, mbId, country: countryName, area, relevance,
+            }, cp)
             process.stdout.write(`\r    artist ${processed + 1}: ${artist.name.slice(0, 30).padEnd(30)} | ${tracksAdded} tracks`)
           } catch (err) {
             console.error(`\n  Skipping artist ${artist.name || mbId}: ${err.message}`)
@@ -406,6 +1646,18 @@ async function main() {
     console.log(`✓ ${area} done`)
   }
 
+  // Wikidata: fonte artisti complementare (dopo MusicBrainz, non sostitutiva)
+  if (runWD) await runWikidataStage(cp)
+
+  // Last.fm: segnale di rilevanza/tag che modula la relevance degli artisti in catalogo.
+  // Va dopo MusicBrainz/Wikidata così opera sull'intero catalogo (anche i nuovi).
+  if (runLF) await runLastfmStage(cp)
+  if (runLF && LF_DISCOVER) await runLastfmDiscoverStage(cp)
+
+  // Spotify: scoperta artisti correlati a partire dai semi ad alta relevance.
+  // Dopo Last.fm, così i semi sono ordinati sulla relevance già modulata.
+  if (runSP) await runSpotifyStage(cp)
+
   await resolveUnmatched(cp)
   await logSummary()
 
@@ -415,4 +1667,19 @@ async function main() {
   console.log('\nDone.')
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+if (SP_TEST) {
+  const names = (typeof SP_TEST === 'string' && SP_TEST)
+    ? SP_TEST.split(',').map(s => s.trim()).filter(Boolean)
+    : SP_TEST_SAMPLE
+  runSpotifyTest(names).catch(e => { console.error(e); process.exit(1) })
+} else if (LF_TEST) {
+  const names = (typeof LF_TEST === 'string' && LF_TEST)
+    ? LF_TEST.split(',').map(s => s.trim()).filter(Boolean)
+    : LF_TEST_SAMPLE
+  runLastfmTest(names).catch(e => { console.error(e); process.exit(1) })
+} else if (WD_TEST) {
+  const isoList = WD_TEST.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+  runWikidataTest(isoList).catch(e => { console.error(e); process.exit(1) })
+} else {
+  main().catch(e => { console.error(e); process.exit(1) })
+}
