@@ -43,7 +43,7 @@ export function useMusicKit(onEnded?: () => void): MusicKitController {
         instance.addEventListener('playbackStateDidChange', onChange)
         setReady(true)
       })
-      .catch(() => { /* MusicKit unavailable (non-Safari) — preview fallback handles audio */ })
+      .catch((e) => { console.error('[MusicKit] load/configure failed:', e) /* non-Safari → preview fallback */ })
     return () => { mk?.removeEventListener('playbackStateDidChange', onChange) }
   }, [])
 

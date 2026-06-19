@@ -35,7 +35,8 @@ export interface MKInstance {
 }
 
 export interface MusicKitGlobal {
-  configure(config: object): void
+  // v3 returns a Promise resolving to the configured instance; older builds return void.
+  configure(config: object): Promise<MKInstance> | MKInstance | void
   getInstance(): MKInstance
   PlaybackStates: Record<string, number>
 }
@@ -64,13 +65,15 @@ export function loadMusicKit(developerToken: string): Promise<MKInstance> {
       reject(new Error('MusicKit: no window'))
       return
     }
-    const configure = () => {
+    const configure = async () => {
       try {
-        window.MusicKit!.configure({
+        // v3: configure() is async — await it so the API client/token is ready before
+        // any setQueue/play call. Fall back to getInstance() for older builds (void).
+        const configured = await window.MusicKit!.configure({
           developerToken,
           app: { name: 'JamNet', build: '1.0.0' },
         })
-        resolve(window.MusicKit!.getInstance())
+        resolve((configured as MKInstance) || window.MusicKit!.getInstance())
       } catch (e) {
         reject(e)
       }

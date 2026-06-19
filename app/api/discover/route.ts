@@ -85,9 +85,21 @@ export async function POST(req: NextRequest) {
     // ── Country / artist filter: curated random within that subset (no region balance,
     //    no anti-country for a single country) ───────────────────────────────────────
     if (country || artistMbId || artistName) {
+      // The DB stores country NAMES (e.g. "Ethiopia"), but callers may pass an ISO code
+      // (e.g. daily.json uses "ET"). Match both so either form works.
+      let countryValues: string[] = []
+      if (country) {
+        countryValues = [country]
+        if (country.length === 2) {
+          try {
+            const name = new Intl.DisplayNames(['en'], { type: 'region' }).of(country.toUpperCase())
+            if (name && name.toUpperCase() !== country.toUpperCase()) countryValues.push(name)
+          } catch { /* ignore */ }
+        }
+      }
       const base = (): Query => {
         let q = applyDecade(sb.from('tracks').select(TRACK_COLUMNS).or(PLAYABLE), decades, includeNow)
-        if (country) q = q.eq('country', country)
+        if (country) q = q.in('country', countryValues)
         if (artistMbId) q = q.eq('artist_mb_id', artistMbId)
         else if (artistName) q = q.eq('artist_name', artistName)
         return q

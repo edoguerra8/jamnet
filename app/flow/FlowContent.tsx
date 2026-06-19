@@ -64,6 +64,15 @@ function getSaveState(id: string): SaveState {
   return 'genre'
 }
 
+// Human-readable message for a playback failure (shown briefly to the user).
+function playErrorMessage(e: unknown): string {
+  const m = (e as { message?: string })?.message || ''
+  if (/subscription|MusicUserToken|unauthorized|forbidden|403|401/i.test(m)) {
+    return 'Apple Music sign-in needed — tap play again'
+  }
+  return 'Couldn’t play this track — tap play again'
+}
+
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function FlowContent() {
@@ -92,6 +101,7 @@ export default function FlowContent() {
   const [saveStates,    setSaveStates]    = useState<Record<string, SaveState>>({})
   const [usingPreview,  setUsingPreview]  = useState(false)
   const [scrubbing,     setScrubbing]     = useState<1 | -1 | null>(null)
+  const [playerError,   setPlayerError]   = useState<string | null>(null)
 
   // Overlays
   const [panelOpen,     setPanelOpen]     = useState(false)
@@ -145,6 +155,12 @@ export default function FlowContent() {
   const handleEnded = useCallback(() => { stepIndex(1) }, [stepIndex])
   const mk = useMusicKit(handleEnded)
 
+  // Show a brief message at the bottom of the player (errors, status).
+  const flashError = useCallback((msg: string) => {
+    setPlayerError(msg)
+    window.setTimeout(() => setPlayerError(null), 3500)
+  }, [])
+
   // Load & play the track at the current index (Apple Music, else iTunes preview).
   const loadCurrent = useCallback(() => {
     const cur = queueRef.current[indexRef.current]
@@ -160,11 +176,15 @@ export default function FlowContent() {
         setUsingPreview(false)
         if (!hasInteractedRef.current) { loadedIdRef.current = null; return } // authorize only from a gesture
         loadedIdRef.current = cur.appleMusId
-        mk.playSong(cur.appleMusId).catch(() => {
+        mk.playSong(cur.appleMusId).catch((e) => {
+          console.error('[play] playSong failed:', e)
+          loadedIdRef.current = null
           if (cur.previewUrl && audio) {
             setUsingPreview(true)
             audio.src = cur.previewUrl
             audio.play().catch(() => {})
+          } else {
+            flashError(playErrorMessage(e))
           }
         })
       } else if (cur.previewUrl && audio) {
@@ -187,7 +207,7 @@ export default function FlowContent() {
       // tracks). Skip forward as a last resort.
       stepIndex(1)
     }
-  }, [mk, stepIndex])
+  }, [mk, stepIndex, flashError])
 
   // Side-effects when a track becomes the settled "current": history, report reset, playback.
   const settle = useCallback(() => {
@@ -369,18 +389,27 @@ export default function FlowContent() {
       if (mk.isPlaying) { mk.pause(); return }
       if (loadedIdRef.current === cur.appleMusId) { mk.resume().catch(() => {}); return }
       loadedIdRef.current = cur.appleMusId
-      mk.playSong(cur.appleMusId).catch(() => {
+      mk.playSong(cur.appleMusId).catch((e) => {
+        console.error('[play] playSong failed:', e)
+        loadedIdRef.current = null
         if (cur.previewUrl && audioRef.current) {
           setUsingPreview(true)
           audioRef.current.src = cur.previewUrl
           audioRef.current.play().catch(() => {})
+        } else {
+          flashError(playErrorMessage(e))
         }
       })
+    } else if (cur.appleMusId && !mk.ready) {
+      // MusicKit still loading — it will auto-play once ready (mk.ready effect). Give feedback.
+      flashError('Connecting to Apple Music…')
     } else if (cur.previewUrl && audioRef.current) {
       if (audioRef.current.paused) audioRef.current.play().catch(() => {})
       else audioRef.current.pause()
+    } else {
+      flashError('This track isn’t playable')
     }
-  }, [mk])
+  }, [mk, flashError])
 
   const isPlaying = mk.isPlaying || (usingPreview && !!audioRef.current && !audioRef.current.paused)
 
@@ -581,15 +610,17 @@ export default function FlowContent() {
           />
         </div>
 
-        {/* "Link copied" toast */}
+        {/* Toasts: link copied / playback status */}
         <AnimatePresence>
-          {linkCopied && (
+          {(linkCopied || playerError) && (
             <motion.div
-              className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-none"
+              className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-none px-6"
               initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
             >
-              <span className="px-3 py-1.5 rounded-lg bg-ink/80 text-ivory text-[12px] font-sans">Link copied</span>
+              <span className="px-3 py-1.5 rounded-lg bg-ink/80 text-ivory text-[12px] font-sans text-center">
+                {playerError || 'Link copied'}
+              </span>
             </motion.div>
           )}
         </AnimatePresence>

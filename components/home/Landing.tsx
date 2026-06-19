@@ -1,7 +1,10 @@
 'use client'
 import { useState } from 'react'
 import { useMusicKit } from '@/lib/player/useMusicKit'
+import { loadMusicKit } from '@/lib/player/musickit'
 import GramophoneMark from './GramophoneMark'
+
+const TOKEN = process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN
 
 interface Props {
   onConnected: () => void
@@ -18,10 +21,13 @@ export default function Landing({ onConnected }: Props) {
     setBusy(true)
     setError(false)
     try {
-      const inst = mk.instance()
-      if (inst) await inst.authorize()
+      // Ensure MusicKit is fully configured before authorizing (the tap is the gesture).
+      const inst = mk.instance() ?? (TOKEN ? await loadMusicKit(TOKEN) : null)
+      if (!inst) throw new Error('MusicKit unavailable')
+      await inst.authorize()
       onConnected()
-    } catch {
+    } catch (e) {
+      console.error('[MusicKit] authorize failed:', e)
       setError(true)
     } finally {
       setBusy(false)
