@@ -196,6 +196,9 @@ export default function FlowContent() {
     try {
       const f = filtersRef.current
       const currentTrack = queueRef.current[indexRef.current]
+      // Last few tracks' tags feed the route's variety window; the seen count is
+      // a monotonic session-depth signal for the explore/exploit ramp.
+      const recent = queueRef.current.slice(Math.max(0, indexRef.current - 7), indexRef.current + 1)
       const body = {
         areas: f.areas ?? [],
         decades: f.decades ?? [],
@@ -205,6 +208,8 @@ export default function FlowContent() {
         mode: f.mode ?? 'rotta',
         currentArea: currentTrack?.macroArea || null,
         exclude: getSeenIds().slice(-400),
+        sessionDepth: getSeenIds().length,
+        sessionTags: recent.map(tr => tr.tags ?? []),
       }
       const res = await fetch('/api/discover', {
         method: 'POST',

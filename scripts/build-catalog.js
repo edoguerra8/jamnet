@@ -46,6 +46,9 @@ function loadEnv() {
 // --skip-lastfm             → salta lo stage Last.fm.
 // --lastfm-discover         → abilita lo stage opzionale di SCOPERTA via Last.fm
 //                             (geo.getTopArtists per paese, tag.getTopArtists per genere).
+// --lastfm-tracks           → abilita lo stage opzionale di segnale PER-BRANO via
+//                             Last.fm (track.getInfo), limitato alle tracce degli
+//                             artisti ad alti ascolti → bonus quality_score per-brano.
 //                             Off di default: la scoperta è una fase separatamente gated.
 // --folkways-test=Mali,Indonesia → dry run: interroga la Smithsonian Open Access API
 //                             (Folkways/archivi Rinzler) per i paesi indicati e mostra
@@ -79,6 +82,7 @@ const LF_TEST    = LF_TEST_ARG ? ((LF_TEST_ARG.split('=')[1] || '').trim() || tr
 const LF_ONLY    = ARGV.includes('--lastfm-only')
 const SKIP_LF    = ARGV.includes('--skip-lastfm')
 const LF_DISCOVER = ARGV.includes('--lastfm-discover')
+const LF_TRACKS  = ARGV.includes('--lastfm-tracks')
 const SP_TEST_ARG = ARGV.find(a => a === '--spotify-test' || a.startsWith('--spotify-test='))
 const SP_TEST    = SP_TEST_ARG ? ((SP_TEST_ARG.split('=')[1] || '').trim() || true) : null
 const SP_ONLY    = ARGV.includes('--spotify-only')
@@ -251,9 +255,28 @@ function calcRelevance(artist) {
 }
 
 // Peso di una traccia derivato dalla relevance dell'artista (1–100).
-// Unico punto di verità: usato dallo stage MusicBrainz/Wikidata e da Last.fm.
+// LEGACY: compresso da ceil(/10). Tenuto per la colonna `weight` (compat) e per
+// i log relevance dell'artista. Il motore di pesca usa `quality_score` (sotto).
 function weightFromRelevance(relevance) {
   return Math.max(1, Math.min(100, Math.ceil((relevance || 1) / 10)))
+}
+
+// Punteggio di pesca PER-BRANO, de-compresso (float, additivo) — sostituisce il
+// ruolo di `weight` nel campionamento di /api/discover. Tre assi:
+//   • riconoscibilità: listeners Last.fm reali (artista) con ampio range dinamico;
+//     in mancanza ripiega sulla relevance MB (scala diversa ma stesso ordinamento).
+//   • resa sonora: bonus se la traccia ha apple_music_id (riproduzione integrale).
+//   • bonus per-brano: listeners per-traccia (track.getInfo), additivo → 0 se assente.
+function qualityScore({ listeners, relevance, hasApple, trackListeners }) {
+  const signal = (listeners != null && listeners > 0)
+    ? listeners
+    : Math.max(1, relevance || 1)
+  const recog = Math.min(120, Math.round(Math.pow(Math.log10(signal + 10), 1.5) * 4))
+  const reliability = hasApple ? 8 : 0
+  const trackBonus = (trackListeners && trackListeners > 0)
+    ? Math.round(4 * Math.log10(trackListeners + 10))
+    : 0
+  return recog + reliability + trackBonus
 }
 
 function getFirstYear(recording) {
@@ -469,6 +492,21 @@ async function lastfmArtistInfo({ mbid, name }) {
   }
 }
 
+// track.getInfo: segnale PER-BRANO. Preferisce il MusicBrainz ID; in mancanza usa
+// artist+track con autocorrect. Usato dallo stage opzionale --lastfm-tracks.
+async function lastfmTrackInfo({ mbid, artist, track }) {
+  let d = mbid ? await lfFetch({ method: 'track.getinfo', mbid }) : null
+  if ((!d || !d.track) && artist && track) {
+    d = await lfFetch({ method: 'track.getinfo', artist, track, autocorrect: '1' })
+  }
+  const tr = d?.track
+  if (!tr) return null
+  return {
+    listeners: parseInt(tr.listeners) || 0,
+    playcount: parseInt(tr.playcount) || 0,
+  }
+}
+
 // Unisce tag esistenti + tag Last.fm, deduplicati (case-insensitive), max 8.
 function mergeTags(existing, lfTags) {
   const out = []
@@ -500,23 +538,33 @@ async function loadAllArtists() {
   return out
 }
 
-// Applica il nuovo peso a tutte le tracce dell'artista e, dove i tag mancano,
-// fa backfill con i tag Last.fm (non sovrascrive i tag MusicBrainz esistenti).
-async function applyLastfmToTracks(artistId, weight, lfTags) {
+// Aggiorna le tracce dell'artista con i segnali Last.fm: il peso legacy (bulk),
+// il `quality_score` PER-BRANO (de-compresso, dai listeners dell'artista + la
+// riproducibilità e gli eventuali listeners per-traccia del singolo brano) e,
+// dove i tag mancano, il backfill dei tag Last.fm (non sovrascrive i tag MB).
+async function applyLastfmToTracks(artistId, { weight, listeners, lfTags }) {
   await withRetry('lastfm:updateTracksWeight', async () => {
     const { error } = await sb.from('tracks').update({ weight }).eq('artist_mb_id', artistId)
     if (error) console.warn('  update tracks weight:', error.message)
   })
-  if (!lfTags?.length) return
   const { data: tracks } = await sb.from('tracks')
-    .select('id, tags').eq('artist_mb_id', artistId)
+    .select('id, tags, apple_music_id, track_listeners').eq('artist_mb_id', artistId)
   for (const t of tracks || []) {
-    if (t.tags && t.tags.length) continue   // non tocco le tracce già taggate (MB)
-    const merged = mergeTags(t.tags, lfTags)
-    if (!merged.length) continue
-    await withRetry('lastfm:updateTrackTags', async () => {
-      const { error } = await sb.from('tracks').update({ tags: merged }).eq('id', t.id)
-      if (error) console.warn('  update track tags:', error.message)
+    const update = {
+      quality_score: qualityScore({
+        listeners,
+        hasApple: !!t.apple_music_id,
+        trackListeners: t.track_listeners,
+      }),
+    }
+    // backfill tag solo dove mancano (non tocco le tracce già taggate da MB)
+    if (lfTags?.length && !(t.tags && t.tags.length)) {
+      const merged = mergeTags(t.tags, lfTags)
+      if (merged.length) update.tags = merged
+    }
+    await withRetry('lastfm:updateTrack', async () => {
+      const { error } = await sb.from('tracks').update(update).eq('id', t.id)
+      if (error) console.warn('  update track:', error.message)
     })
   }
 }
@@ -570,10 +618,12 @@ async function runLastfmStage(cp) {
     const newWeight = weightFromRelevance(newRel)
 
     await withRetry('lastfm:updateArtist', async () => {
-      const { error } = await sb.from('artists').update({ relevance: newRel }).eq('mb_artist_id', id)
+      const { error } = await sb.from('artists')
+        .update({ relevance: newRel, listeners: info.listeners, playcount: info.playcount })
+        .eq('mb_artist_id', id)
       if (error) console.warn('  update artist relevance:', error.message)
     })
-    await applyLastfmToTracks(id, newWeight, info.tags)
+    await applyLastfmToTracks(id, { weight: newWeight, listeners: info.listeners, lfTags: info.tags })
 
     cp.lastfmDone[id] = {
       listeners: info.listeners, playcount: info.playcount,
@@ -587,6 +637,85 @@ async function runLastfmStage(cp) {
     )
   }
   console.log(`\n  Last.fm: ${cp.lastfmEnriched} artisti arricchiti, ${cp.lastfmNotFound} non trovati`)
+}
+
+// ── Last.fm — segnale PER-BRANO (stage OPZIONALE, gated da --lastfm-tracks) ──
+// Ibrido pragmatico: la base di riconoscibilità resta l'artista (runLastfmStage);
+// qui si aggiunge un bonus per-brano solo dove ha senso e costa poco, cioè per le
+// tracce degli artisti ad alti ascolti (dove il singolo brano ri-ordina davvero il
+// catalogo dell'artista). Idempotente: cp.lastfmTrackDone[trackId] → un solo pass.
+const LF_TRACKS_MIN_LISTENERS = 50000
+
+async function loadHighListenerArtists(minListeners) {
+  const out = []
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('artists')
+      .select('mb_artist_id, name, listeners')
+      .gte('listeners', minListeners)
+      .range(from, from + PAGE - 1)
+    if (error || !data?.length) break
+    out.push(...data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return out
+}
+
+async function runLastfmTracksStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  LAST.FM — segnale per-brano (track.getInfo) per artisti ad alti ascolti')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!LASTFM_KEY) {
+    console.warn('  LASTFM_API_KEY mancante in .env.local — salto lo stage Last.fm tracks')
+    return
+  }
+
+  cp.lastfmTrackDone      = cp.lastfmTrackDone      || {}
+  cp.lastfmTracksEnriched = cp.lastfmTracksEnriched || 0
+
+  const artists = await loadHighListenerArtists(LF_TRACKS_MIN_LISTENERS)
+  console.log(`  ${artists.length} artisti sopra ${LF_TRACKS_MIN_LISTENERS} ascoltatori`)
+
+  for (const a of artists) {
+    const { data: tracks } = await sb.from('tracks')
+      .select('id, title, artist_name, mb_recording_id, apple_music_id')
+      .eq('artist_mb_id', a.mb_artist_id)
+      .is('track_listeners', null)
+
+    for (const t of tracks || []) {
+      if (cp.lastfmTrackDone[t.id]) continue
+      const realMbid = t.mb_recording_id && !/^(wd|sp|lf|dg):/.test(t.mb_recording_id)
+        ? t.mb_recording_id : null
+      let info
+      try {
+        info = await lastfmTrackInfo({ mbid: realMbid, artist: t.artist_name, track: t.title })
+      } catch (err) {
+        console.warn(`\n  Last.fm track ${t.title} failed: ${err.message}`)
+        continue
+      }
+      const trackListeners = info?.listeners ?? 0
+      const qs = qualityScore({
+        listeners: a.listeners,
+        hasApple: !!t.apple_music_id,
+        trackListeners: trackListeners,
+      })
+      await withRetry('lastfmTracks:update', async () => {
+        const { error } = await sb.from('tracks')
+          .update({ track_listeners: trackListeners, quality_score: qs }).eq('id', t.id)
+        if (error) console.warn('  update track listeners:', error.message)
+      })
+      cp.lastfmTrackDone[t.id] = { listeners: trackListeners }
+      cp.lastfmTracksEnriched++
+      saveCheckpoint(cp)
+      process.stdout.write(
+        `\r  ${String(cp.lastfmTracksEnriched).padStart(6)} brani  ${t.title.slice(0, 30).padEnd(30)} ` +
+        `${String(trackListeners).padStart(8)} list   `
+      )
+    }
+  }
+  console.log(`\n  Last.fm tracks: ${cp.lastfmTracksEnriched} brani arricchiti`)
 }
 
 // ── Last.fm — scoperta nuovi artisti (stage OPZIONALE, gated da --lastfm-discover) ──
@@ -1247,6 +1376,7 @@ async function runDiscogsStage(cp) {
             isrc,
             tags:               t.tags,
             weight:             weightFromRelevance(dgRelevance(artRel)),
+            quality_score:      qualityScore({ relevance: dgRelevance(artRel), hasApple: !!appleId }),
           })
           addedT++; cp.discogsNewTracks++
         }
@@ -1613,6 +1743,7 @@ async function processRecordings({ name, mbId, country, area, relevance }, cp) {
         isrc,
         tags,
         weight: weightFromRelevance(relevance),
+        quality_score: qualityScore({ relevance, hasApple: !!appleId }),
       })
       tracksAdded++
     } catch (err) {
@@ -2030,6 +2161,7 @@ async function main() {
   // Va dopo MusicBrainz/Wikidata così opera sull'intero catalogo (anche i nuovi).
   if (runLF) await runLastfmStage(cp)
   if (runLF && LF_DISCOVER) await runLastfmDiscoverStage(cp)
+  if (runLF && LF_TRACKS) await runLastfmTracksStage(cp)
 
   // Spotify: scoperta artisti correlati a partire dai semi ad alta relevance.
   // Dopo Last.fm, così i semi sono ordinati sulla relevance già modulata.

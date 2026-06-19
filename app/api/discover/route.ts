@@ -4,8 +4,10 @@ import { Track, FlowMode } from '@/lib/types'
 import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/tracks'
 
 const BATCH_SIZE = 30
-const VARIETY_WINDOW = 8   // last N tracks used for tag-diversity check
-const VARIETY_ATTEMPTS = 6 // attempts before relaxing the constraint
+const POOL_SIZE = 300       // random window into catalog depth, sampled in JS
+const VARIETY_WINDOW = 8    // last N tracks used for tag-diversity check
+const VARIETY_ATTEMPTS = 6  // attempts before relaxing the constraint
+const RAMP_LENGTH = 15      // session depth over which anchors → surprises
 
 // Adjacent macro-areas for Course mode — biased toward nearby regions
 const ADJACENT: Record<string, string[]> = {
@@ -32,6 +34,18 @@ function overlapsWindow(candidateTags: string[], windowTags: Set<string>): boole
   return candidateTags.some(t => windowTags.has(t))
 }
 
+const ALL_DECADES = [1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
+
+interface Filters {
+  targetAreas: string[]
+  decades: number[]
+  includeNow: boolean
+  country: string | null
+  artistMbId: string | null
+  artistName: string | null
+  exclude: string[]
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
@@ -40,7 +54,6 @@ export async function POST(req: NextRequest) {
     // decades can include numeric values (1950…2020) and the string 'now'
     const rawDecades: (string | number)[] = Array.isArray(body.decades) ? body.decades : []
     const includeNow = rawDecades.includes('now')
-    const ALL_DECADES = [1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
     const decades: number[] = rawDecades
       .map(Number)
       .filter((d: number) => ALL_DECADES.includes(d))
@@ -51,6 +64,7 @@ export async function POST(req: NextRequest) {
     const exclude: string[] = Array.isArray(body.exclude) ? body.exclude.slice(-400) : []
     const mode: FlowMode    = (['whirl','vortice'].includes(body.mode)) ? body.mode : 'course'
     const currentArea: string | null = body.currentArea || null
+    const sessionDepth: number = Number(body.sessionDepth) || 0
 
     // Variety window: tags from the last VARIETY_WINDOW tracks in session
     const sessionTagsList: string[][] = Array.isArray(body.sessionTags) ? body.sessionTags : []
@@ -73,62 +87,93 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Base query: a track is playable if it has apple_music_id OR itunes_preview_url
-    let query = sb.from('tracks')
-      .select(TRACK_COLUMNS)
-      .or('apple_music_id.not.is.null,itunes_preview_url.not.is.null')
+    const filters: Filters = { targetAreas, decades, includeNow, country, artistMbId, artistName, exclude }
 
-    // Decade / "Now" filter
-    if (includeNow && decades.length === 0) {
-      // Only new releases
-      query = query.eq('is_new_release', true)
-    } else if (includeNow) {
-      // New releases OR the selected decade range
-      const sorted = [...decades].sort((a, b) => a - b)
-      const yearFilter = sorted.map(d => `and(year.gte.${d},year.lte.${d + 9})`).join(',')
-      query = query.or(`is_new_release.eq.true,${yearFilter}`)
-    } else if (decades.length > 0 && decades.length < ALL_DECADES.length) {
-      const sorted = [...decades].sort((a, b) => a - b)
-      const contiguous = sorted.every((d, i) => i === 0 || d - sorted[i - 1] === 10)
-      if (contiguous) {
-        query = query.gte('year', sorted[0]).lte('year', sorted[sorted.length - 1] + 9)
+    // Single source of truth for the filtered candidate set. Returns a FRESH
+    // query each call (supabase query objects can't be reused after await), so
+    // the primary and wrap legs of the random draw share identical filters.
+    function buildBaseQuery() {
+      // Quality floor (resa sonora): playable AND has artwork.
+      // `any` here breaks the supabase query-builder's deep conditional-reassignment
+      // type instantiation (TS2589); the result rows are cast explicitly below.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let query: any = sb.from('tracks')
+        .select(TRACK_COLUMNS)
+        .or('apple_music_id.not.is.null,itunes_preview_url.not.is.null')
+        .not('artwork_url', 'is', null)
+
+      // Decade / "Now" filter
+      if (filters.includeNow && filters.decades.length === 0) {
+        query = query.eq('is_new_release', true)
+      } else if (filters.includeNow) {
+        const sorted = [...filters.decades].sort((a, b) => a - b)
+        const yearFilter = sorted.map(d => `and(year.gte.${d},year.lte.${d + 9})`).join(',')
+        query = query.or(`is_new_release.eq.true,${yearFilter}`)
+      } else if (filters.decades.length > 0 && filters.decades.length < ALL_DECADES.length) {
+        const sorted = [...filters.decades].sort((a, b) => a - b)
+        const contiguous = sorted.every((d, i) => i === 0 || d - sorted[i - 1] === 10)
+        if (contiguous) {
+          query = query.gte('year', sorted[0]).lte('year', sorted[sorted.length - 1] + 9)
+        } else {
+          query = query.or(sorted.map(d => `and(year.gte.${d},year.lte.${d + 9})`).join(','))
+        }
       } else {
-        query = query.or(sorted.map(d => `and(year.gte.${d},year.lte.${d + 9})`).join(','))
+        query = query.gte('year', 1950)
       }
-    } else {
-      query = query.gte('year', 1950)
+
+      if (filters.country)    query = query.eq('country', filters.country)
+      if (filters.artistMbId) query = query.eq('artist_mb_id', filters.artistMbId)
+      else if (filters.artistName) query = query.eq('artist_name', filters.artistName)
+
+      if (filters.targetAreas.length > 0) {
+        query = query.in('macro_area', filters.targetAreas)
+      }
+
+      if (filters.exclude.length > 0) {
+        query = query.not('id', 'in', `(${filters.exclude.map(id => `"${id}"`).join(',')})`)
+      }
+
+      return query
     }
 
-    if (country)    query = query.eq('country', country)
-    if (artistMbId) query = query.eq('artist_mb_id', artistMbId)
-    else if (artistName) query = query.eq('artist_name', artistName)
+    // Depth: draw a random window via the indexed `rand` column with wraparound,
+    // so each request samples a different slice of the catalog (not the head).
+    const pivot = Math.random()
+    const primary = await buildBaseQuery()
+      .gte('rand', pivot).order('rand', { ascending: true }).limit(POOL_SIZE)
+    let pool: Record<string, unknown>[] = (primary.data as Record<string, unknown>[]) ?? []
 
-    if (targetAreas.length > 0) {
-      query = query.in('macro_area', targetAreas)
+    if (!primary.error && pool.length < POOL_SIZE) {
+      const wrap = await buildBaseQuery()
+        .lt('rand', pivot).order('rand', { ascending: true }).limit(POOL_SIZE - pool.length)
+      pool = pool.concat((wrap.data as Record<string, unknown>[]) ?? [])
     }
 
-    if (exclude.length > 0) {
-      query = query.not('id', 'in', `(${exclude.map(id => `"${id}"`).join(',')})`)
-    }
-
-    // Fetch a larger pool and apply weighted sampling in JS
-    const { data, error } = await query.limit(300)
-
-    if (error || !data?.length) {
+    if (primary.error || pool.length === 0) {
       return NextResponse.json({ tracks: [] })
     }
 
-    const pool = data as Record<string, unknown>[]
+    // Explore/exploit ramp: early in a session, sharpen toward high-quality,
+    // recognizable anchors (expo > 1); deeper in, flatten so the long tail of
+    // good-but-obscure gems gets real probability (expo < 1). Whirl starts near
+    // the surprise regime. Depends only on session position — never on user id.
+    let t = Math.max(0, Math.min(1, sessionDepth / RAMP_LENGTH))
+    if (isWhirl(mode)) t = Math.max(t, 0.7)
+    const expo = 2 - 1.4 * t
+
+    function baseScore(r: Record<string, unknown>): number {
+      return Number(r.quality_score) || Number(r.weight) || 1
+    }
 
     // Weighted sampling with variety check
     const picked: Record<string, unknown>[] = []
     const remaining = [...pool]
 
     function weightedPick(candidates: Record<string, unknown>[]): number {
-      const totalWeight = candidates.reduce((sum, r) => sum + (Number(r.weight) || 1), 0)
+      const totalWeight = candidates.reduce((sum, r) => sum + Math.pow(baseScore(r), expo), 0)
       let rnd = Math.random() * totalWeight
       for (let i = 0; i < candidates.length; i++) {
-        rnd -= Number(candidates[i].weight) || 1
+        rnd -= Math.pow(baseScore(candidates[i]), expo)
         if (rnd <= 0) return i
       }
       return candidates.length - 1

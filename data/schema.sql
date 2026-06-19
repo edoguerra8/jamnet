@@ -12,6 +12,8 @@ create table if not exists artists (
   macro_area    text,
   bio_short     text,
   relevance     integer not null default 0,
+  listeners     bigint,             -- segnale Last.fm grezzo (artist.getInfo)
+  playcount     bigint,             -- segnale Last.fm grezzo (artist.getInfo)
   created_at    timestamptz not null default now()
 );
 
@@ -29,12 +31,17 @@ create table if not exists tracks (
   macro_area          text,
   year                integer,
   youtube_video_id    text,
+  apple_music_id      text,                                  -- fonte audio primaria (MusicKit)
   itunes_track_id     text,
   itunes_preview_url  text,
   artwork_url         text,
   isrc                text,
+  is_new_release      boolean not null default false,        -- decade "Now"
   tags                text[] not null default '{}',
-  weight              integer not null default 1,
+  weight              integer not null default 1,            -- legacy: peso artista (compresso)
+  quality_score       double precision,                      -- segnale di pesca per-brano (de-compresso)
+  track_listeners     bigint,                                -- segnale Last.fm per-brano (track.getInfo, opzionale)
+  rand                double precision not null default random(),  -- chiave per campionamento profondo
   created_at          timestamptz not null default now()
 );
 
@@ -42,6 +49,24 @@ create index if not exists tracks_macro_area_idx on tracks (macro_area);
 create index if not exists tracks_country_idx    on tracks (country);
 create index if not exists tracks_year_idx       on tracks (year);
 create index if not exists tracks_weight_idx     on tracks (weight);
+create index if not exists tracks_quality_idx    on tracks (quality_score);
+create index if not exists tracks_rand_idx       on tracks (rand);
+
+-- ── Migrazioni per installazioni esistenti (idempotenti) ─────────────────────
+-- `create table if not exists` non aggiunge colonne a una tabella già presente:
+-- esegui questo blocco per allineare un DB esistente allo schema sopra.
+alter table artists add column if not exists listeners       bigint;
+alter table artists add column if not exists playcount       bigint;
+alter table tracks  add column if not exists apple_music_id   text;
+alter table tracks  add column if not exists is_new_release   boolean not null default false;
+alter table tracks  add column if not exists quality_score    double precision;
+alter table tracks  add column if not exists track_listeners  bigint;
+alter table tracks  add column if not exists rand             double precision;
+update tracks set rand = random() where rand is null;
+alter table tracks  alter column rand set default random();
+alter table tracks  alter column rand set not null;
+create index if not exists tracks_quality_idx on tracks (quality_score);
+create index if not exists tracks_rand_idx    on tracks (rand);
 
 -- ── Match reports ──────────────────────────────────────────────────────────
 create table if not exists match_reports (
