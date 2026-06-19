@@ -11,10 +11,28 @@ import {
 const BATCH_SIZE = 30
 const POOL_SIZE = 300
 const ALL_DECADES = [1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
-const PLAYABLE = 'apple_music_id.not.is.null,itunes_preview_url.not.is.null'
+
+// ── Minimum appreciability criteria (decided with the user) ───────────────────
+// A track is proposable only if it is on Apple Music (full track), the artist clears
+// a relevance floor, it has at least one genre tag, and the title isn't spoken/junk.
+const QUALITY_FLOOR = 8   // minimum artist relevance (weight) — "selective" tier
+const JUNK_TITLE = /\b(interview|commentary|karaoke|tribute|backing track|made famous|originally performed|spoken|narration|audiobook)\b/i
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Query = any
+
+// SQL-side floor: real Apple Music track + relevance ≥ QUALITY_FLOOR.
+function withFloor(q: Query): Query {
+  return q.not('apple_music_id', 'is', null).gte('weight', QUALITY_FLOOR)
+}
+
+// JS-side floor: at least one genre tag, no spoken/junk title.
+function passesQuality(r: Record<string, unknown>): boolean {
+  const tags = (r.tags as string[]) || []
+  if (tags.length < 1) return false
+  if (JUNK_TITLE.test(String(r.title || ''))) return false
+  return true
+}
 
 // Apply the decade / "Now" filter to a query builder.
 function applyDecade(q: Query, decades: number[], includeNow: boolean): Query {
@@ -98,7 +116,7 @@ export async function POST(req: NextRequest) {
         }
       }
       const base = (): Query => {
-        let q = applyDecade(sb.from('tracks').select(TRACK_COLUMNS).or(PLAYABLE), decades, includeNow)
+        let q = applyDecade(withFloor(sb.from('tracks').select(TRACK_COLUMNS)), decades, includeNow)
         if (country) q = q.in('country', countryValues)
         if (artistMbId) q = q.eq('artist_mb_id', artistMbId)
         else if (artistName) q = q.eq('artist_name', artistName)
@@ -106,8 +124,10 @@ export async function POST(req: NextRequest) {
       }
       const rows = await sample(base, POOL_SIZE)
       if (!rows.length) return NextResponse.json({ tracks: [] })
-      let cands = rows.filter(r => !excludeSet.has(String(r.id))).map(toCandidate)
-      if (!cands.length) cands = rows.map(toCandidate)
+      const quality = rows.filter(passesQuality)
+      const pool = quality.length ? quality : rows
+      let cands = pool.filter(r => !excludeSet.has(String(r.id))).map(toCandidate)
+      if (!cands.length) cands = pool.map(toCandidate)
       const ctx: RecentContext = country ? { prev: recentCtx.prev, countries: [], artists: recentCtx.artists } : recentCtx
       return finish(cands, {}, ctx)
     }
@@ -124,12 +144,14 @@ export async function POST(req: NextRequest) {
     const perArea = await Promise.all(targetAreas.map(a => {
       const k = Math.max(4, Math.min(40, Math.round(BATCH_SIZE * shares[a] * 2.4) + 3))
       const base = (): Query => applyDecade(
-        sb.from('tracks').select(TRACK_COLUMNS).or(PLAYABLE).eq('macro_area', a), decades, includeNow,
+        withFloor(sb.from('tracks').select(TRACK_COLUMNS)).eq('macro_area', a), decades, includeNow,
       )
       return sample(base, k)
     }))
 
-    const rows = perArea.flat()
+    const allRows = perArea.flat()
+    const quality = allRows.filter(passesQuality)
+    const rows = quality.length ? quality : allRows
     let cands = rows.filter(r => !excludeSet.has(String(r.id))).map(toCandidate)
     if (!cands.length) cands = rows.map(toCandidate)
     if (!cands.length) return NextResponse.json({ tracks: [] })

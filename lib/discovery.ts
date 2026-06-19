@@ -45,13 +45,14 @@ export function familyOf(tags: string[] | null | undefined): string | null {
   return null
 }
 
-// Anchored-discovery weighting: favor the mid band (gems), compress megastars so they
-// stay present but don't dominate, damp tracks with poor metadata (no tags).
+// Quality-first weighting: favour higher relevance (super-linear), so the solid,
+// better-known tracks surface and obscure ones (just above the floor) come up rarely.
+// The hard minimum-quality floor (Apple Music + relevance + tags) is applied upstream
+// in /api/discover; this only ranks the survivors.
 export function curationWeight(weight: number, hasTags: boolean): number {
-  let w = Math.max(1, Math.min(100, weight || 1))
-  if (w > 65) w = 65 + (w - 65) * 0.15
-  let s = Math.sqrt(w)
-  if (!hasTags) s *= 0.4
+  const w = Math.max(1, Math.min(100, weight || 1))
+  let s = Math.pow(w, 1.5)
+  if (!hasTags) s *= 0.05
   return s
 }
 
