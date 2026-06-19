@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase'
+import { createServiceClient } from '@/lib/db/supabase'
 
 // Artist card data — bio_short (2 lines of cultural context, sez. 4.3)
 export async function GET(req: NextRequest) {

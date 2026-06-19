@@ -6,7 +6,6 @@ export interface Track {
   artist_mb_id?: string | null
   artworkUrl: string | null
   appleMusId: string | null    // Apple Music ID (MusicKit playback)
-  youtubeVideoId: string | null  // kept in schema, no longer populated
   previewUrl: string | null      // iTunes preview (fallback when appleMusId absent)
   isNewRelease: boolean
   year: number
@@ -37,7 +36,6 @@ export interface HistoryEntry {
   artist: string
   artworkUrl: string | null
   appleMusId: string | null
-  youtubeVideoId: string | null
   previewUrl: string | null
   macroArea: string
   country: string

@@ -1,6 +1,6 @@
 import { Suspense } from 'react'
 import FlowContent from './FlowContent'
-import CompassIcon from '@/components/CompassIcon'
+import CompassIcon from '@/components/ui/CompassIcon'
 
 export default function FlowPage() {
   return (

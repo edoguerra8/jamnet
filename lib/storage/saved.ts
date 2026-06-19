@@ -1,4 +1,4 @@
-import { Track, Compilation } from './types'
+import { Track, Compilation } from '../types'
 
 const GENRE_KEY = 'jamnet_genre_playlists'
 const COMP_KEY = 'jamnet_compilations'

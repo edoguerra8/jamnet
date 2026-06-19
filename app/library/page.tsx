@@ -2,13 +2,13 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import PlaylistCover from '@/components/PlaylistCover'
-import CompassIcon from '@/components/CompassIcon'
+import PlaylistCover from '@/components/library/PlaylistCover'
+import CompassIcon from '@/components/ui/CompassIcon'
 import {
   getGenrePlaylists, getCompilations, createCompilation,
   renameCompilation, removeCompilation,
   removeTrackFromCompilation, removeFromGenrePlaylist,
-} from '@/lib/saved'
+} from '@/lib/storage/saved'
 import { Track, Compilation } from '@/lib/types'
 
 export default function LibraryPage() {

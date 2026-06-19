@@ -1,9 +1,9 @@
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import WorldMap from '@/components/WorldMap'
-import DecadeButtons, { DECADES } from '@/components/DecadeButtons'
-import ModeSelector from '@/components/ModeSelector'
+import WorldMap from '@/components/map/WorldMap'
+import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
+import ModeSelector from '@/components/controls/ModeSelector'
 import { FlowMode } from '@/lib/types'
 import { getDailyDestination, dailyLabel } from '@/lib/daily'
 

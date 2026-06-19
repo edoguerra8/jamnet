@@ -28,7 +28,8 @@ create table if not exists tracks (
   country             text,
   macro_area          text,
   year                integer,
-  youtube_video_id    text,
+  apple_music_id      text,                                 -- MusicKit playback (ISRC → Apple Music, storefront IT)
+  is_new_release      boolean not null default false,       -- impostato dal job settimanale nuove uscite
   itunes_track_id     text,
   itunes_preview_url  text,
   artwork_url         text,
@@ -42,6 +43,13 @@ create index if not exists tracks_macro_area_idx on tracks (macro_area);
 create index if not exists tracks_country_idx    on tracks (country);
 create index if not exists tracks_year_idx       on tracks (year);
 create index if not exists tracks_weight_idx     on tracks (weight);
+create index if not exists idx_tracks_apple_music_id on tracks (apple_music_id) where apple_music_id is not null;
+create index if not exists idx_tracks_is_new_release on tracks (is_new_release) where is_new_release = true;
+
+-- ── Migrazione (DB live già popolato): rimuovere la colonna YouTube legacy ───
+-- La colonna non è più letta né scritta dal codice (stage YouTube rimosso).
+-- Eseguire una volta in Supabase SQL Editor:
+--   alter table tracks drop column if exists youtube_video_id;
 
 -- ── Match reports ──────────────────────────────────────────────────────────
 create table if not exists match_reports (

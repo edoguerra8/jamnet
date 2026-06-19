@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase'
-import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/tracks'
+import { createServiceClient } from '@/lib/db/supabase'
+import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/db/tracks'
 
 // Single track by id — used by share links (/flow?track=<id>)
 export async function GET(req: NextRequest) {

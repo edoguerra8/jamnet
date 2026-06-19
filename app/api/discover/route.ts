@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createServiceClient } from '@/lib/supabase'
+import { createServiceClient } from '@/lib/db/supabase'
 import { Track, FlowMode } from '@/lib/types'
-import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/tracks'
+import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/db/tracks'
 
 const BATCH_SIZE = 30
 const VARIETY_WINDOW = 8   // last N tracks used for tag-diversity check

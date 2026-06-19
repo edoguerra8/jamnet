@@ -2,14 +2,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import CompassIcon from '@/components/CompassIcon'
-import HeartButton, { SaveState } from '@/components/HeartButton'
-import WorldMap from '@/components/WorldMap'
-import DecadeButtons, { DECADES } from '@/components/DecadeButtons'
-import ModeSelector from '@/components/ModeSelector'
+import CompassIcon from '@/components/ui/CompassIcon'
+import HeartButton, { SaveState } from '@/components/ui/HeartButton'
+import WorldMap from '@/components/map/WorldMap'
+import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
+import ModeSelector from '@/components/controls/ModeSelector'
 import { Track, FlowMode } from '@/lib/types'
-import { isInGenrePlaylist, addToGenrePlaylist, isInAnyCompilation, addToDefaultCompilation } from '@/lib/saved'
-import { addToHistory } from '@/lib/history'
+import { isInGenrePlaylist, addToGenrePlaylist, isInAnyCompilation, addToDefaultCompilation } from '@/lib/storage/saved'
+import { addToHistory } from '@/lib/storage/history'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -219,6 +219,8 @@ export default function FlowContent() {
     try {
       const f = filtersRef.current
       const currentTrack = queueRef.current[indexRef.current]
+      // Tags from the last few played tracks → drives the diversity check server-side
+      const recent = queueRef.current.slice(Math.max(0, indexRef.current - 7), indexRef.current + 1)
       const body = {
         areas:      f.areas   ?? [],
         decades:    f.decades ?? [],
@@ -227,6 +229,7 @@ export default function FlowContent() {
         artistName: f.artistName ?? null,
         mode:       f.mode ?? 'rotta',
         currentArea: currentTrack?.macroArea || null,
+        sessionTags: recent.map(t => t.tags || []),
         exclude:    getSeenIds().slice(-400),
       }
       const res  = await fetch('/api/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })

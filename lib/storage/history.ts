@@ -1,4 +1,4 @@
-import { HistoryEntry, Track } from './types'
+import { HistoryEntry, Track } from '../types'
 
 const HISTORY_KEY = 'jamnet_history'
 const MAX_ENTRIES = 500
@@ -20,7 +20,6 @@ export function addToHistory(track: Track): void {
       artist:        track.artist,
       artworkUrl:    track.artworkUrl,
       appleMusId:    track.appleMusId,
-      youtubeVideoId: track.youtubeVideoId,
       previewUrl:    track.previewUrl,
       macroArea:     track.macroArea,
       country:       track.country,

@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# JamNet
 
-## Getting Started
+Sito di scoperta musicale mondiale. Scegli un'area del mondo e un periodo, premi play e
+ascolti un flusso di brani che non si ripete mai — dalle field recording degli anni '50 alle
+uscite di oggi. Nessuna personalizzazione: la scoperta è uguale per tutti.
 
-First, run the development server:
+L'elemento-firma è la **bussola**: in modalità *Course* l'ago tiene una direzione, in *Whirl* gira libero.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+> Visione, decisioni e fasi complete in [PROGETTO.md](PROGETTO.md).
+
+## Stack
+
+- **Next.js 16** (App Router, Turbopack) + React 19 + TypeScript
+- **Tailwind CSS v4**
+- **Supabase** (Postgres) — catalogo di tracce e artisti
+- **Apple Music via MusicKit JS** — unica fonte audio (Safari su dispositivi Apple)
+- **framer-motion** — animazioni funzionali
+
+## Architettura audio (Apple-only)
+
+JamNet riproduce tramite Apple Music. La riproduzione integrale richiede **Safari su Mac/iPhone/iPad**.
+Da altri browser viene mostrata una schermata sobria che invita ad aprire il sito su Safari.
+I brani con `apple_music_id` suonano integrali (o anteprima 30s senza abbonamento); in assenza,
+fallback all'anteprima `itunes_preview_url` con etichetta "preview".
+
+## Struttura del progetto
+
+```
+app/                  Route (App Router)
+  page.tsx            Home: mappa, decenni, modalità, play
+  flow/               Il flusso di ascolto (FlowContent + componenti)
+  library/            Libreria: playlist di genere, compilation
+  api/                discover · track · artist · report
+components/
+  ui/                 CompassIcon, HeartButton
+  map/                WorldMap (SVG 11 macro-aree)
+  controls/           DecadeButtons, ModeSelector
+  library/            PlaylistCover
+  flow/               Sotto-componenti del flusso
+lib/
+  types.ts            Modello dati (Track, Compilation, …)
+  geo.ts              Helper geografici (countryName)
+  daily.ts            Destinazione del giorno
+  db/                 Client Supabase + mapping righe→Track
+  storage/            Persistenza locale (history, saved)
+  player/             Integrazione MusicKit
+data/                 regions.json, daily.json, schema.sql
+scripts/              build-catalog.js, new-releases.js, generate-apple-token.js
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Sviluppo
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm install
+npm run dev          # http://localhost:3000
+npm run build        # build di produzione
+npx tsc --noEmit     # typecheck
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Le variabili d'ambiente vanno in `.env.local` (vedi PROGETTO.md sez. 8.1). Le chiavi pubbliche
+richieste dal browser hanno prefisso `NEXT_PUBLIC_` (`NEXT_PUBLIC_SUPABASE_URL`,
+`NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN`).
 
-## Learn More
+## Catalogo
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run build-catalog            # build incrementale, rilanciabile
+node scripts/build-catalog.js --artwork-only   # solo backfill copertine
+node scripts/new-releases.js     # nuove uscite settimanali (is_new_release)
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Lo schema Supabase è in [data/schema.sql](data/schema.sql).
