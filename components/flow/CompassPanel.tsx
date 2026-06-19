@@ -3,43 +3,39 @@ import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/ui/CompassIcon'
 import WorldMap from '@/components/map/WorldMap'
-import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
+import DecadeButtons from '@/components/controls/DecadeButtons'
 
 interface Props {
   open: boolean
   initialAreas: string[]
   initialDecades: number[]
+  initialNow: boolean
   fetching: boolean
   directionKey: string
   onClose: () => void
-  onGo: (areas: string[], decades: number[]) => void
+  onGo: (areas: string[], decades: number[], now: boolean) => void
   onHome: () => void
 }
 
 export default function CompassPanel({
-  open, initialAreas, initialDecades, fetching, directionKey, onClose, onGo, onHome,
+  open, initialAreas, initialDecades, initialNow, fetching, directionKey, onClose, onGo, onHome,
 }: Props) {
   const [areas, setAreas] = useState<string[]>(initialAreas)
   const [decades, setDecades] = useState<number[]>(initialDecades)
+  const [now, setNow] = useState<boolean>(initialNow)
 
   // Re-sync the draft with the active filters each time the panel opens.
   useEffect(() => {
     if (open) {
       setAreas(initialAreas)
       setDecades(initialDecades)
+      setNow(initialNow)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const toggleArea = (area: string) =>
     setAreas(prev => prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area])
-
-  const toggleDecade = (d: number) =>
-    setDecades(prev => {
-      if (prev.length === 0) return [d]
-      const next = prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
-      return next.length === 0 || next.length === DECADES.length ? [] : next
-    })
 
   return (
     <AnimatePresence>
@@ -74,13 +70,13 @@ export default function CompassPanel({
                   </button>
                 </div>
               </div>
-              <DecadeButtons selected={decades} onToggle={toggleDecade} />
+              <DecadeButtons selected={decades} now={now} onChange={(d, n) => { setDecades(d); setNow(n) }} />
               <div className="flex justify-between items-center">
                 <button onClick={onHome} className="text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
                   Back to home
                 </button>
                 <button
-                  onClick={() => onGo(areas, decades)}
+                  onClick={() => onGo(areas, decades, now)}
                   className="px-6 py-2.5 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200"
                 >
                   Go

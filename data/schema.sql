@@ -35,9 +35,16 @@ create table if not exists tracks (
   artwork_url         text,
   isrc                text,
   tags                text[] not null default '{}',
-  weight              integer not null default 1,
+  weight              integer not null default 1,        -- legacy: recording-count MusicBrainz (rumoroso, in dismissione)
+  popularity          integer,                           -- 0–100: notorietà reale (Spotify popularity, fallback Last.fm) — rebuild 2026
+  pop_region          integer,                           -- 0–100: percentile notorietà RELATIVO a macro_area+decennio (anchoring "da tutto il mondo")
+  spotify_id          text,                              -- match Spotify (per popularity/refresh)
+  lastfm_listeners    integer,                           -- listeners Last.fm dell'artista (fallback popolarità)
   created_at          timestamptz not null default now()
 );
+
+create index if not exists tracks_popularity_idx on tracks (popularity);
+create index if not exists tracks_pop_region_idx on tracks (pop_region);
 
 create index if not exists tracks_macro_area_idx on tracks (macro_area);
 create index if not exists tracks_country_idx    on tracks (country);
@@ -50,6 +57,15 @@ create index if not exists idx_tracks_is_new_release on tracks (is_new_release) 
 -- La colonna non è più letta né scritta dal codice (stage YouTube rimosso).
 -- Eseguire una volta in Supabase SQL Editor:
 --   alter table tracks drop column if exists youtube_video_id;
+
+-- ── Migrazione rebuild 2026: colonne notorietà reale (Spotify/Last.fm) ───────
+-- Eseguire una volta in Supabase SQL Editor PRIMA dell'arricchimento:
+--   alter table tracks add column if not exists popularity       integer;
+--   alter table tracks add column if not exists pop_region        integer;
+--   alter table tracks add column if not exists spotify_id        text;
+--   alter table tracks add column if not exists lastfm_listeners  integer;
+--   create index if not exists tracks_popularity_idx on tracks (popularity);
+--   create index if not exists tracks_pop_region_idx on tracks (pop_region);
 
 -- ── Match reports ──────────────────────────────────────────────────────────
 create table if not exists match_reports (

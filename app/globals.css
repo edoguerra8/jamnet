@@ -1,22 +1,32 @@
 @import "tailwindcss";
 
 @theme {
-  /* Palette 4.1 — minimalismo caldo. Un solo accento: terracotta. */
+  /* ── Sistema "Sabbia / Pino" (nuovo, bloccato) ─────────────────────────────
+     Fondi chiari, un solo accento: pino. Migrazione schermata-per-schermata. */
+  --color-sand:      #F3F0E8;   /* fondo schermo */
+  --color-surface:   #EDEADF;   /* card / superfici / input */
+  --color-ink:       #20231E;   /* testo principale */
+  --color-muted:     #837E72;   /* testo secondario, label */
+  --color-faint:     #A39C8C;   /* testo terziario, hint, tappe non attive */
+  --color-border:    #E0DACB;   /* bordi card / righe (1px) */
+  --color-hairline:  #E8E3D7;   /* separatori interni lista */
+  --color-pine:      #3F6B4E;   /* accento: play, selezioni, ago bussola, link */
+  --color-pine-700:  #356043;   /* bordo/hover su superfici pino */
+  --color-clay:      #B5523F;   /* distruttivo: SOLO "rimuovi" */
+  --color-map-land:  #DED7C6;   /* mappa: regioni non selezionate */
+
+  /* ── Palette legacy (terracotta) — rimossa a migrazione completata ─────────
+     Lasciata finché le schermate non ancora ri-disegnate la referenziano. */
   --color-ivory:      #FAF9F5;
   --color-parchment:  #F0EEE6;
-  --color-ink:        #1F1E1D;
-  --color-muted:      #8A8377;
   --color-terracotta: #C96442;
-  --color-border:     #E4E0D5;
-
-  /* Tinte piatte della palette per le zone della mappa (non selezionate) */
   --color-map-1: #E9E5D9;
   --color-map-2: #E2DCCE;
   --color-map-3: #EDE8DD;
 
-  /* Typography */
-  --font-serif: var(--font-lora), Georgia, "Times New Roman", serif;
-  --font-sans:  var(--font-inter), system-ui, -apple-system, sans-serif;
+  /* Typography — Newsreader (serif) + Hanken Grotesk (sans) */
+  --font-serif: var(--font-newsreader), Georgia, "Times New Roman", serif;
+  --font-sans:  var(--font-hanken), system-ui, -apple-system, sans-serif;
 }
 
 @utility pt-safe {
@@ -25,6 +35,11 @@
 
 @utility pb-safe {
   padding-bottom: max(env(safe-area-inset-bottom), 20px);
+}
+
+/* Numeri tabulari — anni, decenni, durate, tempi */
+@utility tnum {
+  font-variant-numeric: tabular-nums;
 }
 
 *, *::before, *::after {

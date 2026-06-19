@@ -1,7 +1,7 @@
 'use client'
 
-// Stylized world map — 11 tappable macro-areas, flat palette tones,
-// no national borders (sez. 4.1). Selected area = terracotta fill.
+// Stylized world map — 11 tappable macro-areas, flat land tone, no national
+// borders (sez. 4.1). Selected area = pine fill (sistema "Sabbia / Pino").
 
 interface Props {
   selected: string[]            // empty = whole world (nothing highlighted)
@@ -95,12 +95,6 @@ const ZONES: Zone[] = [
   },
 ]
 
-const TONES = {
-  1: 'var(--color-map-1)',
-  2: 'var(--color-map-2)',
-  3: 'var(--color-map-3)',
-}
-
 export default function WorldMap({ selected, onToggle, showLabels = true, className = '' }: Props) {
   return (
     <svg
@@ -111,7 +105,7 @@ export default function WorldMap({ selected, onToggle, showLabels = true, classN
     >
       {ZONES.map(zone => {
         const isSelected = selected.includes(zone.area)
-        const fill = isSelected ? 'var(--color-terracotta)' : TONES[zone.tone]
+        const fill = isSelected ? 'var(--color-pine)' : 'var(--color-map-land)'
         return (
           <g
             key={zone.area}
@@ -125,8 +119,8 @@ export default function WorldMap({ selected, onToggle, showLabels = true, classN
             <path
               d={roundedPath(zone.points)}
               fill={fill}
-              stroke="var(--color-ivory)"
-              strokeWidth="1"
+              stroke="var(--color-surface)"
+              strokeWidth="1.2"
               style={{ transition: 'fill 250ms ease' }}
             />
             {zone.dots?.map(([x, y, r], i) => (
@@ -144,10 +138,10 @@ export default function WorldMap({ selected, onToggle, showLabels = true, classN
                 textAnchor="middle"
                 fontSize="7.5"
                 fontFamily="var(--font-sans)"
-                fill="var(--color-ink)"
-                stroke="var(--color-ivory)"
+                fill={isSelected ? 'var(--color-sand)' : 'var(--color-ink)'}
+                stroke={isSelected ? 'none' : 'var(--color-surface)'}
                 strokeWidth="2.5"
-                opacity={isSelected ? 0.95 : 0.7}
+                opacity={isSelected ? 1 : 0.7}
                 pointerEvents="none"
                 style={{ paintOrder: 'stroke' }}
               >

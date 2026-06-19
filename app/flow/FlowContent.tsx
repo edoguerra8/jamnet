@@ -42,6 +42,7 @@ function addSeenId(id: string) {
 interface FlowFilters {
   areas?: string[]
   decades?: number[]
+  now?: boolean          // "Now" = new releases (is_new_release)
   country?: string
   artistMbId?: string
   artistName?: string
@@ -50,7 +51,8 @@ interface FlowFilters {
 function buildFlowUrl(f: FlowFilters) {
   const p = new URLSearchParams()
   if (f.areas?.length)   p.set('areas',     f.areas.join(','))
-  if (f.decades?.length) p.set('decades',   f.decades.join(','))
+  const dec = [...(f.decades ?? []).map(String), ...(f.now ? ['now'] : [])]
+  if (dec.length)        p.set('decades',   dec.join(','))
   if (f.country)         p.set('country',   f.country)
   if (f.artistMbId)      p.set('artist',    f.artistMbId)
   if (f.artistName)      p.set('artistName', f.artistName)
@@ -85,6 +87,7 @@ export default function FlowContent() {
   const decades = decadesParam
     ? decadesParam.split(',').map(Number).filter(d => DECADES.includes(d))
     : []
+  const nowActive = decadesParam.split(',').includes('now')   // "Now" = new releases
   const country         = searchParams.get('country') ?? ''
   const artistMbId      = searchParams.get('artist') ?? ''
   const artistNameParam = searchParams.get('artistName') ?? ''
@@ -129,7 +132,7 @@ export default function FlowContent() {
 
   useEffect(() => {
     filtersRef.current = {
-      areas, decades, country: country || undefined,
+      areas, decades, now: nowActive, country: country || undefined,
       artistMbId: artistMbId || undefined,
       artistName: artistNameParam || undefined,
     }
@@ -234,7 +237,7 @@ export default function FlowContent() {
       const recent = queueRef.current.slice(Math.max(0, indexRef.current - 5), indexRef.current + 1)
       const body = {
         areas:       f.areas   ?? [],
-        decades:     f.decades ?? [],
+        decades:     [...(f.decades ?? []), ...(f.now ? ['now'] : [])],
         country:     f.country    ?? null,
         artistMbId:  f.artistMbId ?? null,
         artistName:  f.artistName ?? null,
@@ -630,10 +633,11 @@ export default function FlowContent() {
         open={panelOpen}
         initialAreas={areas}
         initialDecades={decades}
+        initialNow={nowActive}
         fetching={fetching}
         directionKey={directionKey}
         onClose={() => setPanelOpen(false)}
-        onGo={(a, d) => { setPanelOpen(false); goWithFilters({ areas: a, decades: d }) }}
+        onGo={(a, d, n) => { setPanelOpen(false); goWithFilters({ areas: a, decades: d, now: n }) }}
         onHome={() => router.push('/')}
       />
 

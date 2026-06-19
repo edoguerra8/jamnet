@@ -17,6 +17,12 @@ export default function Page() {
   const [phase, setPhase] = useState<Phase>('loading')
 
   useEffect(() => {
+    // Dev-only: ?preview=home|landing|gate per ispezionare le schermate nel preview
+    // (Chromium non passa isAppleMusicCapable, che manderebbe tutto sul gate).
+    if (process.env.NODE_ENV === 'development') {
+      const pv = new URLSearchParams(window.location.search).get('preview')
+      if (pv === 'home' || pv === 'landing' || pv === 'gate') { setPhase(pv); return }
+    }
     if (!isAppleMusicCapable()) { setPhase('gate'); return }
     const connected = localStorage.getItem(CONNECTED_KEY) === '1'
     setPhase(connected ? 'home' : 'landing')
@@ -24,7 +30,7 @@ export default function Page() {
 
   if (phase === 'loading') {
     return (
-      <div className="h-dvh flex items-center justify-center bg-ivory">
+      <div className="h-dvh flex items-center justify-center bg-sand">
         <CompassIcon spinning size={40} className="text-ink/40" />
       </div>
     )

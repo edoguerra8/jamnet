@@ -1,22 +1,26 @@
 import type { Metadata, Viewport } from 'next'
-import { Lora, Inter } from 'next/font/google'
+import { Newsreader, Hanken_Grotesk } from 'next/font/google'
 import './globals.css'
 
-const lora = Lora({
+// Serif — titoli, claim, titoli brano/playlist.
+const newsreader = Newsreader({
   subsets: ['latin'],
-  variable: '--font-lora',
+  weight: ['400', '500'],
+  variable: '--font-newsreader',
   display: 'swap',
 })
 
-const inter = Inter({
+// Sans — UI, corpo, label, bottoni.
+const hanken = Hanken_Grotesk({
   subsets: ['latin'],
-  variable: '--font-inter',
+  weight: ['400', '500', '600'],
+  variable: '--font-hanken',
   display: 'swap',
 })
 
 export const metadata: Metadata = {
   title: 'JamNet',
-  description: 'Discover music from everywhere, every era.',
+  description: 'Music around the world, one song at a time.',
 }
 
 export const viewport: Viewport = {
@@ -29,8 +33,8 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${lora.variable} ${inter.variable} h-full`}>
-      <body className="min-h-full font-sans bg-ivory text-ink antialiased">
+    <html lang="en" className={`${newsreader.variable} ${hanken.variable} h-full`}>
+      <body className="min-h-full font-sans bg-sand text-ink antialiased">
         {children}
       </body>
     </html>

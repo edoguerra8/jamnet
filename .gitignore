@@ -42,3 +42,7 @@ scripts/.checkpoint.json
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# design reference (not code)
+Linee guida design critico.zip
+*.zip
