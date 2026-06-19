@@ -14,6 +14,11 @@ export interface MusicKitController {
   pause: () => void
   resume: () => Promise<void>
   stop: () => void
+  /** current playback position / track length, in seconds */
+  position: number
+  duration: number
+  /** seek the current track to `seconds` */
+  seekTo: (seconds: number) => void
   /** the underlying instance (for the Library API), or null if not ready */
   instance: () => MKInstance | null
   isAuthorized: () => boolean
@@ -24,6 +29,8 @@ export function useMusicKit(onEnded?: () => void): MusicKitController {
   const mkRef = useRef<MKInstance | null>(null)
   const [ready, setReady] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
+  const [position, setPosition] = useState(0)
+  const [duration, setDuration] = useState(0)
   const onEndedRef = useRef(onEnded)
   useEffect(() => { onEndedRef.current = onEnded }, [onEnded])
 
@@ -36,15 +43,28 @@ export function useMusicKit(onEnded?: () => void): MusicKitController {
       setIsPlaying(s === PLAYBACK.playing)
       if (s === PLAYBACK.completed || s === PLAYBACK.ended) onEndedRef.current?.()
     }
+    const onTime = () => {
+      if (!mk) return
+      setPosition(mk.currentPlaybackTime || 0)
+      setDuration(mk.currentPlaybackDuration || 0)
+    }
     loadMusicKit(TOKEN)
       .then(instance => {
         mk = instance
         mkRef.current = instance
         instance.addEventListener('playbackStateDidChange', onChange)
+        instance.addEventListener('playbackTimeDidChange', onTime)
         setReady(true)
       })
       .catch((e) => { console.error('[MusicKit] load/configure failed:', e) /* non-Safari → preview fallback */ })
-    return () => { mk?.removeEventListener('playbackStateDidChange', onChange) }
+    return () => {
+      mk?.removeEventListener('playbackStateDidChange', onChange)
+      mk?.removeEventListener('playbackTimeDidChange', onTime)
+    }
+  }, [])
+
+  const seekTo = useCallback((seconds: number) => {
+    mkRef.current?.seekToTime(Math.max(0, seconds))
   }, [])
 
   const playSong = useCallback(async (appleMusId: string) => {
@@ -61,5 +81,5 @@ export function useMusicKit(onEnded?: () => void): MusicKitController {
   const instance = useCallback(() => mkRef.current, [])
   const isAuthorized = useCallback(() => mkRef.current?.isAuthorized ?? false, [])
 
-  return { ready, isPlaying, playSong, pause, resume, stop, instance, isAuthorized }
+  return { ready, isPlaying, playSong, pause, resume, stop, position, duration, seekTo, instance, isAuthorized }
 }

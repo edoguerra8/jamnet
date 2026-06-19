@@ -20,11 +20,14 @@ export const PLAYBACK = {
 export interface MKInstance {
   isAuthorized: boolean
   playbackState: number
+  currentPlaybackTime: number
+  currentPlaybackDuration: number
   authorize(): Promise<string>
   setQueue(opts: { song: string }): Promise<void>
   play(): Promise<void>
   pause(): void
   stop(): void
+  seekToTime(time: number): Promise<void>
   addEventListener(event: string, handler: () => void): void
   removeEventListener(event: string, handler: () => void): void
   // Library API — used by "Save to Apple Music"
