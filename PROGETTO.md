@@ -380,3 +380,32 @@ Verifica: build senza errori TypeScript; grep `youtube_video_id` su tutto il pro
 | Stile | Minimalismo caldo (sez. 4.1, vincolante) |
 | Landing page | Pittogramma SVG (seduto con grammofono, terracotta su avorio) + tagline + "Connect Apple Music" |
 | Lingua UI | Inglese |
+
+---
+
+## 9. RICOSTRUZIONE E PULIZIA (2026-06-19)
+
+Revisione completa del progetto su branch `rebuild`. tsc e `next build` puliti, flusso verificato in dev server.
+
+### 9.1 Ristrutturazione file
+- `components/` → `ui/` (CompassIcon, HeartButton), `map/` (WorldMap), `controls/` (DecadeButtons, ModeSelector), `library/` (PlaylistCover, ShareSheet), `home/` (HomeScreen, Landing, BrowserGate, GramophoneMark), `flow/` (TrackCard, PlayerControls, CompassPanel, ArtistSheet, ReportSheet)
+- `lib/` → `db/` (supabase, tracks), `storage/` (history, saved), `player/` (musickit, useMusicKit, appleLibrary); aggiunto `lib/geo.ts`
+- Rimossi gli SVG di default di Next in `public/`, README riscritto, `.DS_Store` ripuliti
+- `youtube_video_id` rimosso da tipi/tracks/history/schema (Phase 6). Migrazione DB live: `alter table tracks drop column if exists youtube_video_id;`
+- `schema.sql` allineato (apple_music_id, is_new_release, indici)
+
+### 9.2 Bug corretti
+- **discover restituiva 0 brani** dopo ~360 ID visti in sessione: la query usava un pool fisso di 300 righe senza ordinamento (sempre le stesse) e l'`exclude` come filtro `in()` gigante in URL. Riscritto con **campionamento casuale per cursore uuid** (`gte('id', randomUUID()).order('id')` con wrap-around) ed esclusione lato JS. Varietà molto migliore.
+- **Auto-advance runaway**: i brani con `apple_music_id` ma MusicKit non pronto (browser non-Safari, o caricamento) cadevano nel ramo "niente da riprodurre" e saltavano fino in fondo alla coda. Ora **aspettano** MusicKit.
+- **Card congelata**: `AnimatePresence mode="wait"` andava in deadlock sotto re-render frequenti → sostituito con `motion.div` keyed (dissolvenza in entrata).
+- **Check varietà morto**: il frontend non inviava `sessionTags` a `/discover`; ora sì.
+
+### 9.3 Funzionalità nuove
+- **Acceleratore avanti/indietro (VHS)**: tieni premuto ⏮/⏭ per scorrere la coda accelerando, rilascia per fermarti; tap singolo = un brano. Navigazione indietro aggiunta. Safety stop su perdita di pointerup / blur / tab nascosta.
+- **MusicKit JS** estratto in hook `useMusicKit` (autorizzazione solo da gesto utente).
+- **Landing + gate**: `/` mostra gate (non-Safari), Landing "Connect Apple Music" (prima visita), Home (dopo).
+- **Etichetta "New release"** nel flusso; modalità canoniche `course`/`whirl`.
+- **Libreria (Fase 5 locale)**: Recently played (cronologia locale), riproduzione in sequenza (`/flow?source=list`), riordino brani nelle compilation, **Save to Apple Music** (MusicKit Library API, feedback X di Y) + **Share** nativo con nota.
+
+### 9.4 In sospeso — login account (Fase 5 sez. 5.1)
+**BLOCCATO**: `NEXT_PUBLIC_SUPABASE_ANON_KEY` è vuota → il client browser Supabase non si inizializza e il magic-link login non è verificabile. Schema + RLS già pronti in `data/schema.sql`. Da fare quando la chiave è disponibile (Supabase Dashboard → Project Settings → API → "anon public"): magic-link login + merge cronologia/like locali con il server. L'app è **pienamente funzionante senza login** (libreria locale).
