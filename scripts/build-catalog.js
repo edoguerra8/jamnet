@@ -7,7 +7,8 @@
  * Rilanciabile:  riprende dal checkpoint scripts/.checkpoint.json
  *
  * Prerequisiti in .env.local:
- *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, YOUTUBE_API_KEY
+ *   NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, YOUTUBE_API_KEY,
+ *   LASTFM_API_KEY, FOLKWAYS_API_KEY (chiave api.data.gov per la Smithsonian Open Access API)
  */
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -46,6 +47,13 @@ function loadEnv() {
 // --lastfm-discover         → abilita lo stage opzionale di SCOPERTA via Last.fm
 //                             (geo.getTopArtists per paese, tag.getTopArtists per genere).
 //                             Off di default: la scoperta è una fase separatamente gated.
+// --folkways-test=Mali,Indonesia → dry run: interroga la Smithsonian Open Access API
+//                             (Folkways/archivi Rinzler) per i paesi indicati e mostra
+//                             quanti esecutori si scoprono e quanti si risolvono su
+//                             MusicBrainz. Nessuna scrittura. Richiede FOLKWAYS_API_KEY
+//                             (in .env.local o come variabile d'ambiente).
+// --folkways-only           → esegue solo lo stage Folkways (salta MB/Wikidata/Last.fm).
+// --skip-folkways           → salta lo stage Folkways.
 // --spotify-test[=Nome1,..] → dry run: autentica (Client Credentials), cerca gli artisti
 //                             del campione e stampa gli artisti correlati trovati.
 //                             Nessuna scrittura. Legge le credenziali da .env.local o env.
@@ -59,6 +67,8 @@ function loadEnv() {
 //                             Nessuna scrittura. Legge DISCOGS_TOKEN da .env.local o env.
 // --discogs-only            → esegue solo lo stage Discogs (salta MB/Wikidata/Last.fm/Spotify).
 // --skip-discogs            → salta lo stage Discogs.
+// --artwork-only            → esegue solo il backfill artwork_url per le tracce con apple_music_id
+//                             ma senza artwork (batch da 300 via Apple Music API).
 
 const ARGV       = process.argv.slice(2)
 const WD_TEST    = (ARGV.find(a => a.startsWith('--wikidata-test=')) || '').split('=')[1] || null
@@ -77,7 +87,13 @@ const SP_SEEDS   = parseInt((ARGV.find(a => a.startsWith('--spotify-seeds=')) ||
 const DG_TEST    = (ARGV.find(a => a.startsWith('--discogs-test=')) || '').split('=')[1] || null
 const DG_ONLY    = ARGV.includes('--discogs-only')
 const SKIP_DG    = ARGV.includes('--skip-discogs')
-const DRY_RUN    = Boolean(WD_TEST) || Boolean(LF_TEST) || Boolean(SP_TEST) || Boolean(DG_TEST)
+const FW_TEST    = (ARGV.find(a => a.startsWith('--folkways-test=')) || '').split('=')[1] || null
+const FW_ONLY    = ARGV.includes('--folkways-only')
+const SKIP_FW    = ARGV.includes('--skip-folkways')
+const AP_ONLY    = ARGV.includes('--apple-only')
+const SKIP_AP    = ARGV.includes('--skip-apple')
+const ART_ONLY   = ARGV.includes('--artwork-only')
+const DRY_RUN    = Boolean(WD_TEST) || Boolean(LF_TEST) || Boolean(SP_TEST) || Boolean(DG_TEST) || Boolean(FW_TEST)
 
 let ENV = {}
 try { ENV = loadEnv() }
@@ -94,6 +110,10 @@ const SPOTIFY_ID     = ENV['SPOTIFY_CLIENT_ID']     || process.env.SPOTIFY_CLIEN
 const SPOTIFY_SECRET = ENV['SPOTIFY_CLIENT_SECRET'] || process.env.SPOTIFY_CLIENT_SECRET
 // Discogs: stesso schema (env.local → process.env), per il dry-run senza .env.local.
 const DISCOGS_TOKEN  = ENV['DISCOGS_TOKEN'] || process.env.DISCOGS_TOKEN
+// Folkways: chiave api.data.gov per la Smithsonian Open Access API. Stesso schema
+// (env.local → process.env), per il dry-run --folkways-test senza .env.local.
+const FOLKWAYS_KEY   = ENV['FOLKWAYS_API_KEY'] || process.env.FOLKWAYS_API_KEY
+const APPLE_TOKEN    = ENV['APPLE_MUSIC_DEVELOPER_TOKEN'] || process.env.APPLE_MUSIC_DEVELOPER_TOKEN
 
 let sb = null
 if (!DRY_RUN) {
@@ -206,8 +226,13 @@ async function fetchArtistDetails(mbId) {
 }
 
 async function fetchRecordingsForArtist(mbId) {
-  const data = await mbFetch(`/recording?artist=${mbId}&limit=${RECS_PER_ARTIST}&fmt=json&inc=tags`)
+  const data = await mbFetch(`/recording?artist=${mbId}&limit=${RECS_PER_ARTIST}&fmt=json&inc=tags+isrcs`)
   return data?.recordings || []
+}
+
+function getMbIsrc(recording) {
+  const isrcs = recording.isrcs
+  return (Array.isArray(isrcs) && isrcs.length) ? isrcs[0] : null
 }
 
 function extractWikiTitle(urlRels) {
@@ -244,17 +269,22 @@ function getTags(recording) {
   return (recording.tags || []).map(t => t.name).slice(0, 8)
 }
 
-// ── YouTube search ──────────────────────────────────────────────────────────
+// ── Apple Music catalog search (ISRC → apple_music_id) ─────────────────────
 
-async function youtubeSearch(query, cp) {
-  if (!YOUTUBE_KEY || cp.ytSearchesDone >= YT_QUOTA_PER_RUN) return null
+let lastAppleCall = 0
+const APPLE_DELAY_MS = 400
+
+async function appleSearch(isrc) {
+  if (!APPLE_TOKEN || !isrc) return null
+  const wait = APPLE_DELAY_MS - (Date.now() - lastAppleCall)
+  if (wait > 0) await sleep(wait)
+  lastAppleCall = Date.now()
   try {
-    const url = `https://www.googleapis.com/youtube/v3/search?part=id&type=video&videoEmbeddable=true&q=${encodeURIComponent(query)}&key=${YOUTUBE_KEY}&maxResults=1`
-    const res = await withRetry('youtubeSearch', () => fetch(url))
-    cp.ytSearchesDone++
+    const url = `https://api.music.apple.com/v1/catalog/it/songs?filter[isrc]=${encodeURIComponent(isrc)}&limit=1`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${APPLE_TOKEN}` } })
     if (!res.ok) return null
-    const data = await res.json()
-    return data.items?.[0]?.id?.videoId || null
+    const json = await res.json()
+    return json?.data?.[0]?.id || null
   } catch { return null }
 }
 
@@ -1110,7 +1140,7 @@ async function collectDiscogsTracks(country, decade, maxDetails) {
 // Conteggio brani riproducibili per area (stessa logica di logSummary).
 async function areaPlayableCount(area) {
   const { count } = await sb.from('tracks').select('*', { count: 'exact', head: true })
-    .eq('macro_area', area).or('youtube_video_id.not.is.null,itunes_preview_url.not.is.null')
+    .eq('macro_area', area).not('apple_music_id', 'is', null)
   return count || 0
 }
 
@@ -1198,10 +1228,9 @@ async function runDiscogsStage(cp) {
           const dgArtistId = `dg:${t.artistId}`
           const artRel = res.artists.get(t.artistId)?.count || 1
 
-          let ytId = null
-          if (cp.ytSearchesDone < YT_QUOTA_PER_RUN) ytId = await youtubeSearch(`${t.artistName} ${t.title}`, cp)
-          let itunesData = null
-          if (!ytId) itunesData = await itunesSearch(t.artistName, t.title)
+          const itunesData = await itunesSearch(t.artistName, t.title)
+          const isrc = itunesData?.isrc || null
+          const appleId = isrc ? await appleSearch(isrc) : null
 
           await upsertTrack({
             mb_recording_id:    `dg:${t.releaseId}:${t.position}`,
@@ -1211,11 +1240,11 @@ async function runDiscogsStage(cp) {
             // (l'artista esisteva già sotto altro id: il brano resta attribuito per nome).
             artist_mb_id:       existing.mbids.has(dgArtistId) ? dgArtistId : null,
             country, macro_area: area, year: t.year,
-            youtube_video_id:   ytId,
+            apple_music_id:     appleId,
             itunes_track_id:    itunesData?.itunes_track_id || null,
             itunes_preview_url: itunesData?.itunes_preview_url || null,
             artwork_url:        itunesData?.artwork_url || null,
-            isrc:               itunesData?.isrc || null,
+            isrc,
             tags:               t.tags,
             weight:             weightFromRelevance(dgRelevance(artRel)),
           })
@@ -1281,6 +1310,259 @@ async function runDiscogsTest(specs) {
   console.log('\nFatto (dry run). I conteggi sono potenziali: in scrittura si applica il dedup stretto titolo+artista+anno.')
 }
 
+// ── Smithsonian Folkways (Open Access API) — scoperta esecutori di tradizione ──
+// Fonte di SCOPERTA artisti per paese (NON di tracce né di audio). La Smithsonian
+// Open Access API (api.si.edu, chiave api.data.gov) espone il catalogo Folkways e
+// gli archivi Ralph Rinzler sotto unit_code CFCHFOLKLIFE: metadati a livello di
+// album, senza link audio e per lo più ad accesso ristretto. Per questo Folkways
+// NON offre un fallback audio diretto (come itunes_preview_url): gli esecutori
+// scoperti vanno verificati a valle su YouTube/iTunes, come per ogni altra fonte.
+//
+// Modello (uguale a Wikidata/Discogs):
+//  - estrae i NOMI degli esecutori dai record (ruoli "performer"/"artist"; scarta
+//    recorder, field worker, producer, liner notes — etnomusicologi/staff, non
+//    l'entità musicale). I field recording "senza esecutore" restano fuori: serviranno
+//    al catalogo streaming commerciale (integrazione futura, stile MusicKit).
+//  - risolve il nome su MusicBrainz: se trovato (match esatto, normalizzato) usa
+//    l'MBID reale e carica le sue registrazioni col pipeline condiviso (tracce
+//    verificate su YouTube/iTunes, dedup automatico per mb_recording_id); altrimenti
+//    l'artista resta "solo Folkways" con id sintetico fw:<slug>, nessuna traccia.
+//  - anti-duplicati: dedup per mb_artist_id e per nome+paese (loadExistingArtists),
+//    stesso principio di Wikidata/Discogs.
+
+const SI_ENDPOINT       = 'https://api.si.edu/openaccess/api/v1.0/search'
+const SI_DELAY_MS       = 500
+const FW_UNIT           = 'CFCHFOLKLIFE'
+const FW_ROWS_PER_PAGE  = 100
+const FW_MAX_RECORDS    = 200   // record scansionati per paese per run
+// Base modesta per artisti solo-Folkways: archivio curato ma senza un segnale di
+// notorietà proprio; Last.fm la modula a valle. Scala comparabile a wd/dgRelevance.
+const FW_RELEVANCE_BASE = 30
+const FW_PERFORMER_ROLES = new Set(['performer', 'artist'])
+let lastSiCall = 0
+
+async function siFetch(q, start) {
+  if (!FOLKWAYS_KEY) return null
+  const wait = SI_DELAY_MS - (Date.now() - lastSiCall)
+  if (wait > 0) await sleep(wait)
+  lastSiCall = Date.now()
+  const url = `${SI_ENDPOINT}?q=${encodeURIComponent(q)}&start=${start}&rows=${FW_ROWS_PER_PAGE}&api_key=${FOLKWAYS_KEY}`
+  const res = await withRetry('siFetch', () => fetch(url, {
+    headers: { 'User-Agent': 'JamNet/1.0 (edoardoguerra88@gmail.com)' },
+  }))
+  if (res.status === 429) {
+    console.warn('  Smithsonian 429 (rate limit) — wait 30 s')
+    await sleep(30000)
+    return siFetch(q, start)
+  }
+  if (!res.ok) return null
+  const data = await res.json()
+  return data?.response || null
+}
+
+// "Cognome, Nome 1910-1986" / "Suso, Nyama, d. 1991" → "Nyama Suso".
+// Toglie le date di vita in coda e riordina i nomi di persona (una sola virgola).
+function cleanFolkwaysName(raw) {
+  let s = (raw || '').trim()
+  if (!s) return null
+  // date di vita in coda: "1910-1986", ", d. 1991", ", b. 1940", "fl. 1950"
+  s = s.replace(/,?\s*\b(d\.|b\.|fl\.|c\.|ca\.)?\s*\d{3,4}\s*[-–—]\s*\d{0,4}\.?\s*$/i, '').trim()
+  s = s.replace(/,?\s*\b(d\.|b\.|fl\.)\s*\d{3,4}\.?\s*$/i, '').trim()
+  s = s.replace(/,\s*$/, '').trim()
+  // riordina "Cognome, Nome" → "Nome Cognome" solo se sembrano nomi propri
+  const parts = s.split(',')
+  if (parts.length === 2) {
+    const last = parts[0].trim(), first = parts[1].trim()
+    if (last && first && !/\d/.test(first) && first.split(/\s+/).length <= 3) s = `${first} ${last}`
+  }
+  return s.replace(/\s+/g, ' ').trim() || null
+}
+
+// Confronto di paese tollerante: minuscolo/senza diacritici, ignora "the " iniziale
+// e il suffisso " of america" (Folkways usa "United States of America", MB "United
+// States"). Match esatto sui token, così "Mali" ≠ "Somalia".
+function sameCountry(a, b) {
+  const n = s => normKey(s).replace(/^the /, '').replace(/ of america$/, '').trim()
+  const na = n(a), nb = n(b)
+  return !!na && na === nb
+}
+
+// Paesi citati da un record: geoLocation L2 (strutturato) + place (freetext/indicizzato).
+function recordCountries(ct) {
+  const out = []
+  for (const g of (ct.indexedStructured?.geoLocation || [])) {
+    if (g?.L2?.content) out.push(g.L2.content)
+  }
+  for (const p of (ct.freetext?.place || [])) { if (p?.content) out.push(p.content) }
+  for (const p of (ct.indexedStructured?.place || [])) { if (typeof p === 'string') out.push(p) }
+  return out
+}
+
+// Esecutori distinti (nome pulito) dai record Folkways di un paese. Per precisione,
+// considera solo i record la cui geografia (geoLocation/place) corrisponde davvero
+// al paese cercato: la ricerca full-text di SI pesca anche record che citano il
+// paese altrove (es. un brano croato in una ricerca "Mali"). Il paese attribuito è
+// sempre quello cercato, così macro_area resta coerente.
+function extractFolkwaysPerformers(rows, countryName) {
+  const performers = new Map()   // normKey(name) → { name, country }
+  for (const r of rows || []) {
+    const ct = r.content || {}
+    if (!recordCountries(ct).some(c => sameCountry(c, countryName))) continue
+    for (const n of (ct.freetext?.name || [])) {
+      if (!FW_PERFORMER_ROLES.has((n.label || '').toLowerCase())) continue
+      const name = cleanFolkwaysName(n.content)
+      if (!name || name.length < 2) continue
+      const key = normKey(name)
+      if (key && !performers.has(key)) performers.set(key, { name, country: countryName })
+    }
+  }
+  return [...performers.values()]
+}
+
+// Record Folkways per paese (paginati, fino a FW_MAX_RECORDS). Frase di paese fra
+// virgolette così "United States of America" resta un termine unico.
+async function fetchFolkwaysRecords(countryName) {
+  const q = `unit_code:${FW_UNIT} AND "${countryName}"`
+  const rows = []
+  for (let start = 0; start < FW_MAX_RECORDS; start += FW_ROWS_PER_PAGE) {
+    const resp = await siFetch(q, start)
+    const batch = resp?.rows || []
+    rows.push(...batch)
+    if (batch.length < FW_ROWS_PER_PAGE) break
+  }
+  return rows
+}
+
+// Cerca un artista su MusicBrainz per nome; ritorna { id, relevance } solo per un
+// match affidabile (nome uguale, normalizzato con normKey). Niente match → null
+// (l'esecutore resta "solo Folkways").
+async function mbArtistByName(name) {
+  const data = await mbFetch(`/artist?query=${encodeURIComponent(`artist:"${name}"`)}&limit=5&fmt=json`)
+  const target = normKey(name)
+  for (const a of (data?.artists || [])) {
+    if (normKey(a.name) === target) return { id: a.id, relevance: calcRelevance(a) }
+  }
+  return null
+}
+
+// Stage Folkways: per ogni paese, scopre gli esecutori, li deduplica contro il
+// catalogo (mb_artist_id + nome+paese), li risolve su MusicBrainz quando possibile
+// (→ tracce verificabili) e inserisce i nuovi. Checkpoint per (area, paese).
+async function runFolkwaysStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  SMITHSONIAN FOLKWAYS — scoperta esecutori di tradizione per paese')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!FOLKWAYS_KEY) { console.warn('  FOLKWAYS_API_KEY mancante in .env.local — salto lo stage Folkways'); return }
+
+  cp.folkwaysDone     = cp.folkwaysDone     || {}
+  cp.folkwaysNew      = cp.folkwaysNew      || 0
+  cp.folkwaysLinked   = cp.folkwaysLinked   || 0
+  cp.folkwaysFwOnly   = cp.folkwaysFwOnly   || 0
+
+  const existing = await loadExistingArtists()
+  const areaEntries = Object.entries(REGIONS)
+    .filter(([k, v]) => k !== '_comment' && v && Array.isArray(v.musicbrainz_countries))
+
+  for (const [area, region] of areaEntries) {
+    for (const countryName of region.musicbrainz_countries) {
+      const key = `${area}::${countryName}`
+      if (cp.folkwaysDone[key]) continue
+
+      let performers = []
+      try {
+        const rows = await fetchFolkwaysRecords(countryName)
+        performers = extractFolkwaysPerformers(rows, countryName)
+      } catch (err) {
+        console.warn(`  Folkways ${countryName} failed: ${err.message}`)
+        continue
+      }
+
+      let added = 0, linked = 0, fwOnly = 0
+      for (const p of performers) {
+        const nameKey = `${p.name.toLowerCase()}::${(p.country || '').toLowerCase()}`
+        if (existing.nameCountry.has(nameKey)) continue
+
+        let mb = null
+        try { mb = await mbArtistByName(p.name) } catch { /* best-effort */ }
+        if (mb && existing.mbids.has(mb.id)) { existing.nameCountry.add(nameKey); continue }
+
+        const artistId  = mb?.id || `fw:${p.name.toLowerCase().replace(/\s+/g, '-')}`
+        if (existing.mbids.has(artistId)) continue
+        const relevance = mb ? mb.relevance : FW_RELEVANCE_BASE
+
+        await upsertArtist({
+          mb_artist_id: artistId,
+          name:         p.name,
+          country:      p.country,
+          macro_area:   area,
+          bio_short:    null,
+          relevance,
+        })
+        existing.mbids.add(artistId)
+        existing.nameCountry.add(nameKey)
+
+        if (mb) {
+          await processRecordings({ name: p.name, mbId: mb.id, country: p.country, area, relevance }, cp)
+          linked++; cp.folkwaysLinked++
+        } else {
+          fwOnly++; cp.folkwaysFwOnly++
+        }
+        added++; cp.folkwaysNew++
+      }
+
+      cp.folkwaysDone[key] = { performers: performers.length, added, linked, fwOnly }
+      saveCheckpoint(cp)
+      if (performers.length) {
+        console.log(`  ${countryName.slice(0, 24).padEnd(24)} (${area}): ${String(performers.length).padStart(3)} performer → ${added} new (${linked} MB-linked, ${fwOnly} Folkways-only)`)
+      }
+    }
+  }
+  console.log(`\n  Folkways totale: ${cp.folkwaysNew} artisti nuovi (${cp.folkwaysLinked} MB-linked, ${cp.folkwaysFwOnly} solo Folkways)`)
+}
+
+// ── Folkways dry-run test (nessuna scrittura) ────────────────────────────────
+// Per ogni paese: scansiona i record Folkways, estrae gli esecutori distinti e ne
+// risolve un campione su MusicBrainz (proxy delle tracce ottenibili). Nessuna
+// scrittura. Richiede FOLKWAYS_API_KEY (in .env.local o come variabile d'ambiente).
+
+const FW_TEST_RESOLVE = 20
+
+async function runFolkwaysTest(countryNames) {
+  console.log('JamNet — Smithsonian Folkways test (dry run, nessuna scrittura)\n')
+  if (!FOLKWAYS_KEY) { console.error('  FOLKWAYS_API_KEY mancante (in .env.local o variabile d\'ambiente)'); return }
+
+  for (const countryName of countryNames) {
+    const area = Object.keys(REGIONS).find(
+      k => k !== '_comment' && REGIONS[k].musicbrainz_countries?.includes(countryName)
+    ) || '—'
+
+    let rows = []
+    try { rows = await fetchFolkwaysRecords(countryName) }
+    catch (err) { console.log(`\n── ${countryName}: errore ${err.message}`); continue }
+    const performers = extractFolkwaysPerformers(rows, countryName)
+
+    const sample = performers.slice(0, FW_TEST_RESOLVE)
+    let linked = 0
+    const marks = []
+    for (const p of sample) {
+      let mb = null
+      try { mb = await mbArtistByName(p.name) } catch { /* ignore */ }
+      if (mb) linked++
+      marks.push({ name: p.name, mb: !!mb })
+    }
+
+    console.log(`\n── ${countryName}  (${area}) ──`)
+    console.log(`   record Folkways scansionati:                  ${rows.length}`)
+    console.log(`   esecutori distinti (performer/artist):        ${performers.length}`)
+    console.log(`   risolti su MusicBrainz (campione ${String(sample.length).padStart(2)}):         ${linked} → tracce verificabili; gli altri restano solo-Folkways`)
+    if (marks.length) {
+      console.log('   esempi:')
+      for (const m of marks.slice(0, 12)) console.log(`     ${m.mb ? '[MB]     ' : '[FW-only]'} ${m.name.slice(0, 46)}`)
+    }
+  }
+  console.log('\nFatto (dry run). In scrittura: dedup per mb_artist_id e nome+paese; le tracce MB-linked dedupano per mb_recording_id.')
+}
+
 // ── Supabase upserts ────────────────────────────────────────────────────────
 
 async function upsertArtist(row) {
@@ -1311,15 +1593,9 @@ async function processRecordings({ name, mbId, country, area, relevance }, cp) {
     const year = getFirstYear(rec)
     const tags = getTags(rec)
 
-    let ytId = null
-    if (cp.ytSearchesDone < YT_QUOTA_PER_RUN) {
-      ytId = await youtubeSearch(`${name} ${rec.title}`, cp)
-    }
-
-    let itunesData = null
-    if (!ytId) {
-      itunesData = await itunesSearch(name, rec.title)
-    }
+    const itunesData = await itunesSearch(name, rec.title)
+    const isrc = itunesData?.isrc || getMbIsrc(rec) || null
+    const appleId = isrc ? await appleSearch(isrc) : null
 
     try {
       await upsertTrack({
@@ -1330,11 +1606,11 @@ async function processRecordings({ name, mbId, country, area, relevance }, cp) {
         country,
         macro_area:         area,
         year,
-        youtube_video_id:   ytId,
+        apple_music_id:     appleId,
         itunes_track_id:    itunesData?.itunes_track_id || null,
         itunes_preview_url: itunesData?.itunes_preview_url || null,
         artwork_url:        itunesData?.artwork_url || null,
-        isrc:               itunesData?.isrc || null,
+        isrc,
         tags,
         weight: weightFromRelevance(relevance),
       })
@@ -1346,42 +1622,126 @@ async function processRecordings({ name, mbId, country, area, relevance }, cp) {
   return tracksAdded
 }
 
-// ── Resolve unmatched tracks ────────────────────────────────────────────────
+// ── Apple Music matching stage ──────────────────────────────────────────────
+// Post-processing: trova tutte le tracce con ISRC ma senza apple_music_id e le matcha.
+// Rilanciabile: salta le tracce già matchate. Flag: --apple-only, --skip-apple.
 
-async function resolveUnmatched(cp) {
-  if (cp.ytSearchesDone >= YT_QUOTA_PER_RUN) return
-  console.log('\n── Resolving unmatched tracks ─────────────────────────────────')
-  const { data: pending } = await sb.from('tracks')
-    .select('id, title, artist_name, itunes_preview_url')
-    .is('youtube_video_id', null)
-    .limit(200)
-  if (!pending?.length) { console.log('  Nothing to resolve.'); return }
-  console.log(`  ${pending.length} tracks without YouTube — attempting matches`)
-  for (const t of pending) {
-    if (cp.ytSearchesDone >= YT_QUOTA_PER_RUN) {
-      console.log(`  Quota exhausted (${cp.ytSearchesDone} searches used today)`)
-      break
-    }
-    try {
-      const ytId = await youtubeSearch(`${t.artist_name} ${t.title} official`, cp)
-      if (ytId) {
-        await withRetry('resolveUnmatched:update', () =>
-          sb.from('tracks').update({ youtube_video_id: ytId }).eq('id', t.id)
-        )
-      } else if (!t.itunes_preview_url) {
-        const itunes = await itunesSearch(t.artist_name, t.title)
-        if (itunes) {
-          await withRetry('resolveUnmatched:itunesUpdate', () =>
-            sb.from('tracks').update(itunes).eq('id', t.id)
+async function runAppleMusicStage(cp) {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  APPLE MUSIC MATCHING — ISRC → apple_music_id')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!APPLE_TOKEN) {
+    console.log('  APPLE_MUSIC_DEVELOPER_TOKEN mancante in .env.local — skip')
+    return
+  }
+  cp.appleMatched = cp.appleMatched || 0
+  cp.appleDone    = cp.appleDone    || 0
+
+  const PAGE = 200
+  let offset = 0
+  for (;;) {
+    const { data, error } = await sb.from('tracks')
+      .select('id, isrc')
+      .not('isrc', 'is', null)
+      .is('apple_music_id', null)
+      .range(offset, offset + PAGE - 1)
+    if (error) { console.warn('  Apple query error:', error.message); break }
+    if (!data?.length) break
+
+    for (const t of data) {
+      try {
+        const appleId = await appleSearch(t.isrc)
+        if (appleId) {
+          await withRetry('appleUpdate', () =>
+            sb.from('tracks').update({ apple_music_id: appleId }).eq('id', t.id)
           )
+          cp.appleMatched++
         }
+      } catch (err) {
+        console.warn(`  Apple match error for isrc ${t.isrc}: ${err.message}`)
       }
-    } catch (err) {
-      console.error(`  Skipping unmatched track "${t.title}": ${err.message}`)
+      cp.appleDone++
     }
     saveCheckpoint(cp)
-    await sleep(200)
+    process.stdout.write(`\r  Processed ${cp.appleDone} (matched ${cp.appleMatched})`)
+
+    if (data.length < PAGE) break
+    offset += PAGE
   }
+  console.log(`\n  Apple Music: ${cp.appleMatched}/${cp.appleDone} tracce matchate`)
+}
+
+// ── Artwork backfill stage ──────────────────────────────────────────────────
+// Recupera artwork_url per tutte le tracce con apple_music_id ma senza artwork.
+// Usa l'endpoint batch Apple Music (300 id per chiamata). Flag: --artwork-only.
+
+async function runArtworkStage() {
+  console.log('\n════════════════════════════════════════════════════════════')
+  console.log('  ARTWORK BACKFILL — apple_music_id → artwork_url')
+  console.log('════════════════════════════════════════════════════════════')
+  if (!APPLE_TOKEN) {
+    console.log('  APPLE_MUSIC_DEVELOPER_TOKEN mancante — skip')
+    return
+  }
+
+  const BATCH = 300
+  const DELAY = 250
+  let total = 0, updated = 0, noArtwork = 0
+
+  // Non usa offset crescente: le tracce aggiornate escono dal result set da sole,
+  // quindi si fa sempre .range(0, BATCH-1). Il loop finisce quando non ce ne sono più.
+  // Per evitare loop infiniti su tracce che Apple non restituisce artwork,
+  // si raccolgono gli id senza risultato e si skippano nelle iterazioni successive.
+  const skipIds = new Set()
+
+  for (;;) {
+    let query = sb.from('tracks')
+      .select('id, apple_music_id')
+      .not('apple_music_id', 'is', null)
+      .is('artwork_url', null)
+    if (skipIds.size > 0) {
+      query = query.not('apple_music_id', 'in', `(${[...skipIds].join(',')})`)
+    }
+    const { data, error } = await query.range(0, BATCH - 1)
+    if (error) { console.warn('  query error:', error.message); break }
+    if (!data?.length) break
+
+    total += data.length
+    const ids = data.map(t => t.apple_music_id).join(',')
+    const url = `https://api.music.apple.com/v1/catalog/it/songs?ids=${encodeURIComponent(ids)}&fields[songs]=artwork`
+
+    try {
+      const wait = DELAY - (Date.now() - lastAppleCall)
+      if (wait > 0) await sleep(wait)
+      lastAppleCall = Date.now()
+
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${APPLE_TOKEN}` } })
+      if (!res.ok) { console.warn('  Apple API error:', res.status); break }
+      const json = await res.json()
+
+      const artworkById = {}
+      for (const item of (json.data || [])) {
+        const raw = item.attributes?.artwork?.url
+        if (raw) artworkById[item.id] = raw.replace('{w}x{h}', '600x600')
+      }
+
+      for (const t of data) {
+        const art = artworkById[t.apple_music_id]
+        if (!art) { skipIds.add(t.apple_music_id); noArtwork++; continue }
+        await withRetry('artworkUpdate', () =>
+          sb.from('tracks').update({ artwork_url: art }).eq('id', t.id)
+        )
+        updated++
+      }
+    } catch (err) {
+      console.warn('  batch error:', err.message)
+      // In caso di errore di rete, aggiungi tutti gli id al skip per non bloccare
+      for (const t of data) skipIds.add(t.apple_music_id)
+    }
+
+    process.stdout.write(`\r  Processed ${total} — updated ${updated} — no artwork ${noArtwork}`)
+  }
+  console.log(`\n  Artwork backfill: ${updated}/${total} tracce aggiornate`)
 }
 
 // ── Wikidata stage ───────────────────────────────────────────────────────────
@@ -1542,25 +1902,30 @@ async function logSummary() {
   for (const area of areaNames) {
     const { count: total }    = await sb.from('tracks').select('*', { count: 'exact', head: true }).eq('macro_area', area)
     const { count: playable } = await sb.from('tracks').select('*', { count: 'exact', head: true })
-      .eq('macro_area', area).or('youtube_video_id.not.is.null,itunes_preview_url.not.is.null')
+      .eq('macro_area', area).not('apple_music_id', 'is', null)
     console.log(`  ${area.padEnd(20)} ${String(playable || 0).padStart(4)} playable / ${String(total || 0).padStart(5)} total`)
   }
   console.log('\n  By decade:')
   for (let d = 1950; d <= 2020; d += 10) {
     const { count } = await sb.from('tracks').select('*', { count: 'exact', head: true })
-      .gte('year', d).lt('year', d + 10).or('youtube_video_id.not.is.null,itunes_preview_url.not.is.null')
+      .gte('year', d).lt('year', d + 10).not('apple_music_id', 'is', null)
     console.log(`    ${d}s: ${count || 0} playable tracks`)
   }
 
-  // Provenienza artisti: MusicBrainz vs Wikidata-only (mb_artist_id = "wd:...")
+  // Provenienza artisti per prefisso dell'id sintetico (wd:/sp:/lf:/dg:) vs MusicBrainz.
   console.log('\n  Artists by source:')
   const { count: artistsTotal } = await sb.from('artists').select('*', { count: 'exact', head: true })
-  const { count: wdOnly }       = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'wd:%')
-  console.log(`    total: ${artistsTotal || 0}   ·   Wikidata-only: ${wdOnly || 0}   ·   MusicBrainz-linked: ${(artistsTotal || 0) - (wdOnly || 0)}`)
+  const { count: wdOnly } = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'wd:%')
+  const { count: spOnly } = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'sp:%')
+  const { count: lfOnly } = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'lf:%')
+  const { count: dgOnly } = await sb.from('artists').select('*', { count: 'exact', head: true }).like('mb_artist_id', 'dg:%')
+  const synthetic = (wdOnly || 0) + (spOnly || 0) + (lfOnly || 0) + (dgOnly || 0)
+  console.log(`    total: ${artistsTotal || 0}   ·   MusicBrainz-linked: ${(artistsTotal || 0) - synthetic}`)
+  console.log(`    Wikidata-only: ${wdOnly || 0}   ·   Spotify-only: ${spOnly || 0}   ·   Last.fm-only: ${lfOnly || 0}   ·   Discogs-only: ${dgOnly || 0}`)
   for (const area of areaNames) {
-    const { count: aWd } = await sb.from('artists').select('*', { count: 'exact', head: true })
-      .eq('macro_area', area).like('mb_artist_id', 'wd:%')
-    if (aWd) console.log(`      ${area.padEnd(20)} +${aWd} Wikidata-only`)
+    const { count: aDg } = await sb.from('artists').select('*', { count: 'exact', head: true })
+      .eq('macro_area', area).like('mb_artist_id', 'dg:%')
+    if (aDg) console.log(`      ${area.padEnd(20)} +${aDg} Discogs-only`)
   }
 }
 
@@ -1574,14 +1939,22 @@ async function main() {
 
   const areaEntries = Object.entries(REGIONS).filter(([, v]) => v && Array.isArray(v.musicbrainz_countries))
 
-  const runMB = !WD_ONLY && !LF_ONLY && !SP_ONLY
-  const runWD = !SKIP_WD && !LF_ONLY && !SP_ONLY
-  const runLF = !SKIP_LF && !WD_ONLY && !SP_ONLY
-  const runSP = !SKIP_SP && !WD_ONLY && !LF_ONLY
+  const runMB = !WD_ONLY && !LF_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
+  const runWD = !SKIP_WD && !LF_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
+  const runLF = !SKIP_LF && !WD_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
+  const runSP = !SKIP_SP && !WD_ONLY && !LF_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
+  const runDG  = !SKIP_DG && !WD_ONLY && !LF_ONLY && !SP_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
+  const runFW  = !SKIP_FW && !WD_ONLY && !LF_ONLY && !SP_ONLY && !DG_ONLY && !AP_ONLY && !ART_ONLY
+  const runAP  = !SKIP_AP && !ART_ONLY
+  const runART = true
 
-  if (WD_ONLY) console.log('\n(--wikidata-only: salto MusicBrainz, Last.fm e Spotify)')
-  if (LF_ONLY) console.log('\n(--lastfm-only: salto MusicBrainz, Wikidata e Spotify)')
-  if (SP_ONLY) console.log('\n(--spotify-only: salto MusicBrainz, Wikidata e Last.fm)')
+  if (WD_ONLY)  console.log('\n(--wikidata-only: salto MusicBrainz, Last.fm, Spotify, Discogs, Folkways e Apple)')
+  if (LF_ONLY)  console.log('\n(--lastfm-only: salto MusicBrainz, Wikidata, Spotify, Discogs, Folkways e Apple)')
+  if (SP_ONLY)  console.log('\n(--spotify-only: salto MusicBrainz, Wikidata, Last.fm, Discogs, Folkways e Apple)')
+  if (DG_ONLY)  console.log('\n(--discogs-only: salto MusicBrainz, Wikidata, Last.fm, Spotify, Folkways e Apple)')
+  if (FW_ONLY)  console.log('\n(--folkways-only: salto MusicBrainz, Wikidata, Last.fm, Spotify, Discogs e Apple)')
+  if (AP_ONLY)  console.log('\n(--apple-only: esegue solo il matching Apple Music su tracce con ISRC)')
+  if (ART_ONLY) console.log('\n(--artwork-only: esegue solo il backfill artwork_url via Apple Music API)')
 
   for (const [area, { musicbrainz_countries: mbCountries }] of (runMB ? areaEntries : [])) {
     if (cp.completedAreas.includes(area)) {
@@ -1649,6 +2022,10 @@ async function main() {
   // Wikidata: fonte artisti complementare (dopo MusicBrainz, non sostitutiva)
   if (runWD) await runWikidataStage(cp)
 
+  // Folkways: scoperta di esecutori di tradizione/field recording per paese (dopo
+  // Wikidata, prima di Last.fm così il segnale modula anche i nuovi artisti).
+  if (runFW) await runFolkwaysStage(cp)
+
   // Last.fm: segnale di rilevanza/tag che modula la relevance degli artisti in catalogo.
   // Va dopo MusicBrainz/Wikidata così opera sull'intero catalogo (anche i nuovi).
   if (runLF) await runLastfmStage(cp)
@@ -1658,16 +2035,38 @@ async function main() {
   // Dopo Last.fm, così i semi sono ordinati sulla relevance già modulata.
   if (runSP) await runSpotifyStage(cp)
 
-  await resolveUnmatched(cp)
-  await logSummary()
+  // Discogs: riempimento delle aree sotto soglia con uscite indipendenti/locali
+  // assenti da MusicBrainz. Per ultimo: gli altri stage hanno già popolato il
+  // catalogo e definito quali aree restano sotto la soglia di sez. 3.2.
+  if (runDG) await runDiscogsStage(cp)
 
-  // Reset YouTube counter for next day's run
-  cp.ytSearchesDone = 0
+  // Apple Music matching: post-processing su tutte le tracce con ISRC.
+  // Gira per ultimo così beneficia degli ISRC aggiunti da tutti gli stage precedenti.
+  if (runAP) await runAppleMusicStage(cp)
+
+  // Artwork backfill: recupera artwork_url per le tracce con apple_music_id ma senza artwork.
+  // Gira dopo il matching così copre anche i nuovi match.
+  if (runART) await runArtworkStage()
+
+  await logSummary()
   saveCheckpoint(cp)
   console.log('\nDone.')
 }
 
-if (SP_TEST) {
+if (DG_TEST) {
+  // Formato: "Paese:decennio,Paese:decennio" — es. "Mali:1970,Nigeria:1970".
+  const specs = DG_TEST.split(',').map(s => {
+    const i = s.lastIndexOf(':')
+    if (i < 0) return null
+    const country = s.slice(0, i).trim()
+    const decade  = parseInt(s.slice(i + 1).trim())
+    return country && decade ? { country, decade: Math.floor(decade / 10) * 10 } : null
+  }).filter(Boolean)
+  runDiscogsTest(specs).catch(e => { console.error(e); process.exit(1) })
+} else if (FW_TEST) {
+  const countryNames = FW_TEST.split(',').map(s => s.trim()).filter(Boolean)
+  runFolkwaysTest(countryNames).catch(e => { console.error(e); process.exit(1) })
+} else if (SP_TEST) {
   const names = (typeof SP_TEST === 'string' && SP_TEST)
     ? SP_TEST.split(',').map(s => s.trim()).filter(Boolean)
     : SP_TEST_SAMPLE

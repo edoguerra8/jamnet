@@ -19,6 +19,7 @@ export function addToHistory(track: Track): void {
       title:         track.title,
       artist:        track.artist,
       artworkUrl:    track.artworkUrl,
+      appleMusId:    track.appleMusId,
       youtubeVideoId: track.youtubeVideoId,
       previewUrl:    track.previewUrl,
       macroArea:     track.macroArea,

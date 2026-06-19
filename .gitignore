@@ -36,6 +36,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# script runtime state
+scripts/.checkpoint.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
