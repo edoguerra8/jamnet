@@ -1,8 +1,8 @@
 // Landing pictogram (sez. 4.1b): a seated figure listening to a gramophone.
-// Terracotta silhouette on ivory, soft signpost-style shapes. SVG.
+// Pine silhouette on sand, soft signpost-style shapes. SVG.
 
 export default function GramophoneMark({ className = '' }: { className?: string }) {
-  const TC = 'var(--color-terracotta)'
+  const TC = 'var(--color-pine)'
   return (
     <svg viewBox="0 0 240 180" className={className} role="img" aria-label="A person listening to a gramophone">
       {/* ground line */}
@@ -45,7 +45,7 @@ export default function GramophoneMark({ className = '' }: { className?: string 
                  q-16 -2 -16 -10
                  q0 -5 7 -8 z" />
         {/* horn mouth highlight */}
-        <ellipse cx="186" cy="84" rx="6" ry="13" fill="var(--color-ivory)" opacity="0.5" />
+        <ellipse cx="186" cy="84" rx="6" ry="13" fill="var(--color-sand)" opacity="0.5" />
       </g>
 
       {/* a few sound notes drifting from the horn toward the figure */}

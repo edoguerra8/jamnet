@@ -34,7 +34,7 @@ export default function ArtistSheet({
         >
           <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={onClose} />
           <motion.div
-            className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
+            className="relative bg-sand rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 320, damping: 32 }}
           >
@@ -53,11 +53,11 @@ export default function ArtistSheet({
             )}
             <button
               onClick={onListenMore}
-              className="w-full px-4 py-3 rounded-xl border border-terracotta text-terracotta text-[14px] font-sans hover:bg-terracotta hover:text-ivory transition-colors duration-200"
+              className="w-full px-4 py-3 rounded-xl border border-pine text-pine text-[14px] font-sans hover:bg-pine hover:text-sand transition-colors duration-200"
             >
               Listen to more by this artist
             </button>
-            <button onClick={onClose} className="mt-4 text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
+            <button onClick={onClose} className="mt-4 text-sm font-sans text-muted hover:text-pine transition-colors duration-200">
               Close
             </button>
           </motion.div>

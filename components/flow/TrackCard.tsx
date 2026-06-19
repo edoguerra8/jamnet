@@ -30,7 +30,7 @@ export default function TrackCard({
         transition={{ duration: scrubbing ? 0.05 : 0.25, ease: 'easeInOut' }}
       >
         {/* Album art */}
-        <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden bg-parchment border border-border relative">
+        <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden bg-surface border border-border relative">
           {track.artworkUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={track.artworkUrl} alt="" className="w-full h-full object-cover" draggable={false} />
@@ -43,14 +43,14 @@ export default function TrackCard({
           {/* Fast-scrub overlay — the "tape running" feel */}
           {scrubbing && (
             <div className="absolute inset-0 flex items-center justify-center bg-ink/30">
-              <span className="text-ivory text-2xl font-sans tracking-[0.3em] tabular-nums">
+              <span className="text-sand text-2xl font-sans tracking-[0.3em] tabular-nums">
                 {scrubbing === 1 ? '⏩' : '⏪'}
               </span>
             </div>
           )}
 
           {usingPreview && !scrubbing && (
-            <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-ink/60 text-ivory text-[10px] font-sans tracking-wide">
+            <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-ink/60 text-sand text-[10px] font-sans tracking-wide">
               preview
             </div>
           )}
@@ -61,32 +61,32 @@ export default function TrackCard({
           <h1 className="font-serif text-[1.6rem] leading-tight">{track.title}</h1>
           <button
             onClick={onArtistTap}
-            className="self-start text-base font-sans opacity-65 hover:opacity-100 hover:text-terracotta transition-colors duration-200 text-left"
+            className="self-start text-base font-sans opacity-65 hover:opacity-100 hover:text-pine transition-colors duration-200 text-left"
           >
             {track.artist}
           </button>
           <div className="flex flex-wrap items-center gap-2 text-[13px] font-sans text-muted">
             {displayCountry && (
-              <button onClick={() => onCountryTap(track.country)} className="hover:text-terracotta transition-colors duration-200">
+              <button onClick={() => onCountryTap(track.country)} className="hover:text-pine transition-colors duration-200">
                 {displayCountry}
               </button>
             )}
             {displayCountry && track.macroArea && <span className="opacity-40">·</span>}
             {track.macroArea && (
-              <button onClick={() => onAreaTap(track.macroArea)} className="hover:text-terracotta transition-colors duration-200">
+              <button onClick={() => onAreaTap(track.macroArea)} className="hover:text-pine transition-colors duration-200">
                 {track.macroArea}
               </button>
             )}
             {Boolean(track.year) && (
               <>
                 <span className="opacity-40">·</span>
-                <button onClick={() => onYearTap(track.year)} className="hover:text-terracotta transition-colors duration-200 tabular-nums">
+                <button onClick={() => onYearTap(track.year)} className="hover:text-pine transition-colors duration-200 tabular-nums">
                   {track.year}
                 </button>
               </>
             )}
             {track.isNewRelease && (
-              <span className="ml-1 px-1.5 py-0.5 rounded border border-terracotta/50 text-terracotta text-[10px] tracking-wide uppercase">
+              <span className="ml-1 px-1.5 py-0.5 rounded border border-pine/50 text-pine text-[10px] tracking-wide uppercase">
                 New release
               </span>
             )}

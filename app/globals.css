@@ -15,15 +15,6 @@
   --color-clay:      #B5523F;   /* distruttivo: SOLO "rimuovi" */
   --color-map-land:  #DED7C6;   /* mappa: regioni non selezionate */
 
-  /* ── Palette legacy (terracotta) — rimossa a migrazione completata ─────────
-     Lasciata finché le schermate non ancora ri-disegnate la referenziano. */
-  --color-ivory:      #FAF9F5;
-  --color-parchment:  #F0EEE6;
-  --color-terracotta: #C96442;
-  --color-map-1: #E9E5D9;
-  --color-map-2: #E2DCCE;
-  --color-map-3: #EDE8DD;
-
   /* Typography — Newsreader (serif) + Hanken Grotesk (sans) */
   --font-serif: var(--font-newsreader), Georgia, "Times New Roman", serif;
   --font-sans:  var(--font-hanken), system-ui, -apple-system, sans-serif;

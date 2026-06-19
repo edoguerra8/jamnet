@@ -57,7 +57,7 @@ export default function ShareSheet({ open, name, tracks, onClose }: Props) {
         >
           <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={close} />
           <motion.div
-            className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
+            className="relative bg-sand rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 320, damping: 32 }}
           >
@@ -70,13 +70,13 @@ export default function ShareSheet({ open, name, tracks, onClose }: Props) {
               value={note}
               onChange={e => setNote(e.target.value)}
               placeholder="Add a note"
-              className="w-full mb-5 px-3 py-2.5 rounded-xl border border-border bg-transparent text-[14px] font-sans focus:outline-none focus:border-terracotta transition-colors"
+              className="w-full mb-5 px-3 py-2.5 rounded-xl border border-border bg-transparent text-[14px] font-sans focus:outline-none focus:border-pine transition-colors"
             />
 
             <button
               onClick={handleSave}
               disabled={status === 'saving' || playable.length === 0}
-              className="w-full mb-3 px-4 py-3 rounded-xl bg-terracotta text-ivory text-[14px] font-sans hover:opacity-90 active:scale-[0.99] transition-all duration-200 disabled:opacity-50"
+              className="w-full mb-3 px-4 py-3 rounded-xl bg-pine text-sand text-[14px] font-sans hover:opacity-90 active:scale-[0.99] transition-all duration-200 disabled:opacity-50"
             >
               {status === 'saving' ? 'Saving…' : status === 'done' ? 'Saved' : 'Save to Apple Music'}
             </button>
@@ -94,12 +94,12 @@ export default function ShareSheet({ open, name, tracks, onClose }: Props) {
 
             <button
               onClick={handleShare}
-              className="w-full px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-terracotta hover:text-terracotta transition-colors duration-200"
+              className="w-full px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-pine hover:text-pine transition-colors duration-200"
             >
               Share
             </button>
 
-            <button onClick={close} className="mt-4 w-full text-center text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
+            <button onClick={close} className="mt-4 w-full text-center text-sm font-sans text-muted hover:text-pine transition-colors duration-200">
               Close
             </button>
           </motion.div>

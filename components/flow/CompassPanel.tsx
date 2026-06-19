@@ -46,7 +46,7 @@ export default function CompassPanel({
         >
           <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={onClose} />
           <motion.div
-            className="relative bg-ivory rounded-t-2xl px-6 pt-7 pb-10 pb-safe max-h-[88dvh] overflow-y-auto"
+            className="relative bg-sand rounded-t-2xl px-6 pt-7 pb-10 pb-safe max-h-[88dvh] overflow-y-auto"
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={{ type: 'spring', stiffness: 300, damping: 30 }}
             onClick={(e) => e.stopPropagation()}
@@ -63,7 +63,7 @@ export default function CompassPanel({
                     onClick={() => setAreas([])}
                     aria-pressed={areas.length === 0}
                     className={`px-4 py-1.5 rounded-full text-[13px] font-sans border transition-colors duration-200 ${
-                      areas.length === 0 ? 'bg-terracotta border-terracotta text-ivory' : 'border-border text-muted'
+                      areas.length === 0 ? 'bg-pine border-pine text-sand' : 'border-border text-muted'
                     }`}
                   >
                     Whole world
@@ -72,12 +72,12 @@ export default function CompassPanel({
               </div>
               <DecadeButtons selected={decades} now={now} onChange={(d, n) => { setDecades(d); setNow(n) }} />
               <div className="flex justify-between items-center">
-                <button onClick={onHome} className="text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
+                <button onClick={onHome} className="text-sm font-sans text-muted hover:text-pine transition-colors duration-200">
                   Back to home
                 </button>
                 <button
                   onClick={() => onGo(areas, decades, now)}
-                  className="px-6 py-2.5 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200"
+                  className="px-6 py-2.5 bg-pine text-sand rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200"
                 >
                   Go
                 </button>

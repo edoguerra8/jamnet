@@ -510,7 +510,7 @@ export default function FlowContent() {
 
   if (loading && queue.length === 0) {
     return (
-      <div className="h-dvh flex flex-col items-center justify-center bg-ivory gap-4">
+      <div className="h-dvh flex flex-col items-center justify-center bg-sand gap-4">
         <CompassIcon spinning size={48} className="text-ink" />
         <p className="text-sm font-sans text-muted">Finding music…</p>
       </div>
@@ -519,14 +519,14 @@ export default function FlowContent() {
 
   if (!current) {
     return (
-      <div className="h-dvh flex flex-col items-center justify-center bg-ivory gap-6 px-8 text-center">
+      <div className="h-dvh flex flex-col items-center justify-center bg-sand gap-6 px-8 text-center">
         <CompassIcon size={36} className="text-muted" />
         <p className="font-sans text-muted text-sm">
           {queue.length === 0
             ? 'No tracks in catalog yet. Run the build script first.'
             : 'Nothing more. Try a different direction.'}
         </p>
-        <button onClick={() => router.push('/')} className="text-sm font-sans text-terracotta underline underline-offset-4">
+        <button onClick={() => router.push('/')} className="text-sm font-sans text-pine underline underline-offset-4">
           Back to home
         </button>
       </div>
@@ -548,7 +548,7 @@ export default function FlowContent() {
         onPlay={() => { /* state derived from mk + audio.paused */ }}
       />
 
-      <main className="h-dvh overflow-hidden bg-ivory select-none">
+      <main className="h-dvh overflow-hidden bg-sand select-none">
         {/* Top bar */}
         <div className="absolute top-0 left-0 right-0 z-20 flex justify-between items-center px-6 pt-6 pt-safe">
           <button
@@ -621,7 +621,7 @@ export default function FlowContent() {
               initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
             >
-              <span className="px-3 py-1.5 rounded-lg bg-ink/80 text-ivory text-[12px] font-sans text-center">
+              <span className="px-3 py-1.5 rounded-lg bg-ink/80 text-sand text-[12px] font-sans text-center">
                 {playerError || 'Link copied'}
               </span>
             </motion.div>

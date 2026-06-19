@@ -102,7 +102,7 @@ export default function PlayerControls({
         <button
           onClick={onTogglePlay}
           aria-label={isPlaying ? 'Pause' : 'Play'}
-          className="w-14 h-14 flex items-center justify-center rounded-full bg-terracotta text-ivory hover:opacity-90 active:scale-95 transition-all duration-200"
+          className="w-14 h-14 flex items-center justify-center rounded-full bg-pine text-sand shadow-[0_2px_12px_rgba(63,107,78,0.28)] hover:opacity-90 active:scale-95 transition-all duration-200"
         >
           {isPlaying ? (
             <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">

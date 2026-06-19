@@ -68,7 +68,7 @@ export default function LibraryPage() {
   )
 
   return (
-    <main className="min-h-dvh bg-ivory px-5 pt-safe pb-safe">
+    <main className="min-h-dvh bg-sand px-5 pt-safe pb-safe">
       {/* Header */}
       <div className="flex items-center justify-between pt-6 pb-8">
         <button onClick={() => router.back()} className="opacity-50 hover:opacity-100 transition-opacity" aria-label="Back">
@@ -86,7 +86,7 @@ export default function LibraryPage() {
           <p className="text-sm font-sans text-muted">
             Nothing saved yet. Tap the heart while listening to save tracks.
           </p>
-          <button onClick={() => router.push('/')} className="text-sm font-sans text-terracotta underline underline-offset-4">
+          <button onClick={() => router.push('/')} className="text-sm font-sans text-pine underline underline-offset-4">
             Start exploring
           </button>
         </div>
@@ -103,7 +103,7 @@ export default function LibraryPage() {
                     {t.artworkUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={t.artworkUrl} alt="" className="w-9 h-9 rounded object-cover shrink-0" />
-                    ) : <div className="w-9 h-9 rounded bg-parchment shrink-0" />}
+                    ) : <div className="w-9 h-9 rounded bg-surface shrink-0" />}
                     <div className="flex flex-col flex-1 min-w-0">
                       <span className="text-[13px] font-sans truncate">{t.title}</span>
                       <span className="text-[11px] font-sans text-muted truncate">{t.artist}{t.year ? ` · ${t.year}` : ''}</span>
@@ -132,7 +132,7 @@ export default function LibraryPage() {
                             <span className="text-[12px] font-sans text-muted">{tracks.length} {tracks.length === 1 ? 'track' : 'tracks'}</span>
                           </div>
                         </button>
-                        <button onClick={() => playList(tracks)} className="p-2 text-terracotta opacity-80 hover:opacity-100 transition-opacity" aria-label="Play in sequence"><PlayIcon /></button>
+                        <button onClick={() => playList(tracks)} className="p-2 text-pine opacity-80 hover:opacity-100 transition-opacity" aria-label="Play in sequence"><PlayIcon /></button>
                         <button onClick={() => setSharing({ name: genre, tracks })} className="p-2 opacity-40 hover:opacity-100 transition-opacity" aria-label="Save or share"><ShareIcon /></button>
                       </div>
 
@@ -170,7 +170,7 @@ export default function LibraryPage() {
           <section className="flex flex-col gap-4">
             <div className="flex items-center justify-between">
               <h2 className="text-[11px] font-sans text-muted uppercase tracking-widest">Compilations</h2>
-              <button onClick={handleNewCompilation} className="text-[12px] font-sans text-terracotta flex items-center gap-1">
+              <button onClick={handleNewCompilation} className="text-[12px] font-sans text-pine flex items-center gap-1">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14" strokeLinecap="round" /></svg>
                 New
               </button>
@@ -191,7 +191,7 @@ export default function LibraryPage() {
                             {renamingId === comp.id ? (
                               <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={handleRenameCommit}
                                 onKeyDown={e => { if (e.key === 'Enter') handleRenameCommit() }} onClick={e => e.stopPropagation()}
-                                className="font-sans text-[15px] bg-transparent border-b border-terracotta focus:outline-none w-full" />
+                                className="font-sans text-[15px] bg-transparent border-b border-pine focus:outline-none w-full" />
                             ) : (
                               <span className="font-sans text-[15px] truncate">{comp.name}</span>
                             )}
@@ -199,7 +199,7 @@ export default function LibraryPage() {
                           </div>
                         </button>
                         <div className="flex items-center gap-1 shrink-0">
-                          <button onClick={() => playList(comp.tracks)} className="p-2 text-terracotta opacity-80 hover:opacity-100 transition-opacity" aria-label="Play in sequence"><PlayIcon /></button>
+                          <button onClick={() => playList(comp.tracks)} className="p-2 text-pine opacity-80 hover:opacity-100 transition-opacity" aria-label="Play in sequence"><PlayIcon /></button>
                           <button onClick={() => setSharing({ name: comp.name, tracks: comp.tracks })} className="p-2 opacity-40 hover:opacity-100 transition-opacity" aria-label="Save or share"><ShareIcon /></button>
                           <button onClick={() => handleRenameStart(comp)} className="p-2 opacity-30 hover:opacity-80 transition-opacity" aria-label="Rename">
                             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" strokeLinecap="round" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" strokeLinecap="round" /></svg>
