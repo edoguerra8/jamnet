@@ -25,7 +25,7 @@ export default function TrackCard({
   return (
     <motion.div
       key={track.id}
-      className="w-full flex-1 flex flex-col items-center justify-center gap-5"
+      className="w-full flex flex-col items-center justify-center gap-5"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.25, ease: 'easeInOut' }}

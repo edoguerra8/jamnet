@@ -476,7 +476,7 @@ export default function FlowContent() {
         <div className="w-full max-w-md mx-auto flex-1 flex flex-col min-h-0 pt-12 pb-2">
 
           {/* Top bar */}
-          <div className="flex justify-between items-center mb-[18px]">
+          <div className="flex justify-between items-center mb-[18px] shrink-0">
             <button onClick={() => router.push('/')} className="font-serif text-[17px] opacity-60 hover:opacity-100 transition-opacity duration-200">JamNet</button>
             <div className="flex items-center gap-[18px]">
               <button onClick={() => setPanelOpen(true)} className="p-1 -m-1" aria-label="Compass — change direction">
@@ -492,20 +492,23 @@ export default function FlowContent() {
           </div>
 
           {/* Trail */}
-          <div className="mb-6"><TrailThread items={trailItems} /></div>
+          <div className="mb-6 shrink-0"><TrailThread items={trailItems} /></div>
 
-          {/* Track card */}
-          <TrackCard
-            track={current}
-            usingPreview={usingPreview}
-            onArtistTap={openArtistCard}
-            onCountryTap={handleCountryTap}
-            onAreaTap={handleAreaTap}
-            onYearTap={handleYearTap}
-          />
+          {/* Track card — lives in a flex-1 zone that absorbs height variation so the
+              controls below never shift between tracks */}
+          <div className="flex-1 min-h-0 flex flex-col items-center justify-center overflow-hidden">
+            <TrackCard
+              track={current}
+              usingPreview={usingPreview}
+              onArtistTap={openArtistCard}
+              onCountryTap={handleCountryTap}
+              onAreaTap={handleAreaTap}
+              onYearTap={handleYearTap}
+            />
+          </div>
 
-          {/* Seek + transport + utility */}
-          <div className="w-full max-w-[280px] mx-auto flex flex-col gap-[18px] mt-5">
+          {/* Seek + transport + utility — fixed-height footer, never moves */}
+          <div className="w-full max-w-[280px] mx-auto flex flex-col gap-[18px] mt-5 shrink-0">
             <SeekBar position={position} duration={duration} onSeek={seek} disabled={duration <= 0} />
             <PlayerControls
               isPlaying={isPlaying}
