@@ -2,23 +2,36 @@
 import { motion } from 'framer-motion'
 
 interface Props {
-  /** Continuous full rotation — Vortice while searching, or generic loading */
+  /** Continuous full rotation — while searching / loading */
   spinning?: boolean
-  /** Change this key to make the needle swing once and settle — Rotta on direction change */
+  /** Point the needle to this bearing in degrees (0 = N, clockwise); swings smoothly between values */
+  bearing?: number | null
+  /** Change this key to make the needle swing once and settle (when no bearing) */
   nudge?: number | string
   size?: number
   className?: string
 }
 
-export default function CompassIcon({ spinning = false, nudge, size = 24, className = '' }: Props) {
+export default function CompassIcon({ spinning = false, bearing = null, nudge, size = 24, className = '' }: Props) {
+  const pointing = !spinning && typeof bearing === 'number'
+
+  // Stable key while pointing so the needle TWEENS between bearings instead of remounting.
+  const key = spinning ? 'spin' : pointing ? 'bearing' : `still-${nudge ?? 0}`
+
+  const animate = spinning
+    ? { rotate: 360 }
+    : pointing
+      ? { rotate: bearing as number }
+      : { rotate: [0, 26, -16, 8, -3, 0] }
+
+  const transition = spinning
+    ? { duration: 1.6, repeat: Infinity, ease: 'linear' as const }
+    : pointing
+      ? { type: 'spring' as const, stiffness: 80, damping: 14 }
+      : { duration: 0.9, ease: 'easeInOut' as const }
+
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      width={size}
-      height={size}
-      className={className}
-    >
+    <svg viewBox="0 0 24 24" fill="none" width={size} height={size} className={className}>
       {/* Outer ring */}
       <circle cx="12" cy="12" r="9.5" stroke="currentColor" strokeWidth="0.75" />
 
@@ -30,15 +43,11 @@ export default function CompassIcon({ spinning = false, nudge, size = 24, classN
 
       {/* Needle */}
       <motion.g
-        key={spinning ? 'spin' : `still-${nudge ?? 0}`}
+        key={key}
         style={{ transformOrigin: '12px 12px' }}
         initial={{ rotate: 0 }}
-        animate={spinning ? { rotate: 360 } : { rotate: [0, 26, -16, 8, -3, 0] }}
-        transition={
-          spinning
-            ? { duration: 1.6, repeat: Infinity, ease: 'linear' }
-            : { duration: 0.9, ease: 'easeInOut' }
-        }
+        animate={animate}
+        transition={transition}
       >
         {/* North — terracotta */}
         <line x1="12" y1="5"  x2="12" y2="12" stroke="#C96442" strokeWidth="1.75" strokeLinecap="round" />

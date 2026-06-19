@@ -4,34 +4,29 @@ import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/ui/CompassIcon'
 import WorldMap from '@/components/map/WorldMap'
 import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
-import ModeSelector from '@/components/controls/ModeSelector'
-import { FlowMode } from '@/lib/types'
 
 interface Props {
   open: boolean
   initialAreas: string[]
   initialDecades: number[]
-  initialMode: FlowMode
   fetching: boolean
   directionKey: string
   onClose: () => void
-  onGo: (areas: string[], decades: number[], mode: FlowMode) => void
+  onGo: (areas: string[], decades: number[]) => void
   onHome: () => void
 }
 
 export default function CompassPanel({
-  open, initialAreas, initialDecades, initialMode, fetching, directionKey, onClose, onGo, onHome,
+  open, initialAreas, initialDecades, fetching, directionKey, onClose, onGo, onHome,
 }: Props) {
   const [areas, setAreas] = useState<string[]>(initialAreas)
   const [decades, setDecades] = useState<number[]>(initialDecades)
-  const [mode, setMode] = useState<FlowMode>(initialMode)
 
   // Re-sync the draft with the active filters each time the panel opens.
   useEffect(() => {
     if (open) {
       setAreas(initialAreas)
       setDecades(initialDecades)
-      setMode(initialMode)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -62,8 +57,8 @@ export default function CompassPanel({
           >
             <div className="flex flex-col gap-6 max-w-md mx-auto">
               <div className="flex items-center gap-3">
-                <CompassIcon size={20} spinning={mode === 'whirl' && fetching} nudge={directionKey} className="text-ink" />
-                <span className="text-sm font-sans text-muted">New direction</span>
+                <CompassIcon size={20} spinning={fetching} nudge={directionKey} className="text-ink" />
+                <span className="text-sm font-sans text-muted">Set your bearings</span>
               </div>
               <div className="flex flex-col gap-2">
                 <WorldMap selected={areas} onToggle={toggleArea} className="w-full" />
@@ -80,13 +75,12 @@ export default function CompassPanel({
                 </div>
               </div>
               <DecadeButtons selected={decades} onToggle={toggleDecade} />
-              <ModeSelector mode={mode} onChange={setMode} />
               <div className="flex justify-between items-center">
                 <button onClick={onHome} className="text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
                   Back to home
                 </button>
                 <button
-                  onClick={() => onGo(areas, decades, mode)}
+                  onClick={() => onGo(areas, decades)}
                   className="px-6 py-2.5 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200"
                 >
                   Go

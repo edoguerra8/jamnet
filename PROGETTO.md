@@ -359,9 +359,9 @@ Verifica: build senza errori TypeScript; grep `youtube_video_id` su tutto il pro
 | Tema | Decisione |
 |---|---|
 | Nome | JamNet |
-| Firma | Bussola (Course: ago fermo; Whirl: ago che gira) |
-| Modalità di flusso | **Course** (deriva graduale, default) / **Whirl** (salti liberi) — nomi definitivi confermati |
-| Qualità del flusso | Pesca pesata sulla rilevanza degli artisti; finestra varietà 8 brani (check tags, fallback pesca pesata); zero personalizzazione |
+| Firma | Bussola: l'ago **punta verso la regione** del brano corrente (un solo flusso, no modalità) |
+| Modalità di flusso | **Una sola** (Course/Whirl rimossi, 2026-06-19): "set DJ che viaggia il mondo" — vedi sez. 9.5 |
+| Qualità del flusso | Bilanciamento regioni morbido (∝√dimensione), scoperta ancorata (curva di curatela), scheduler DJ (mai stesso paese/artista/regione di fila, transizioni morbide di epoca/genere); zero personalizzazione |
 | Contesto | Bio di 2 righe per artista (Wikipedia via MusicBrainz), scheda toccabile |
 | Riproduzione | **Apple Music via MusicKit JS** — anteprima 30s (account senza Premium) o integrale (abbonati Premium); fallback `itunes_preview_url` con etichetta "preview" |
 | Browser target | **Solo Safari su dispositivi Apple** (Mac/iPhone/iPad). Da altri browser: messaggio sobrio di reindirizzamento, nessuna funzione disponibile |
@@ -409,3 +409,10 @@ Revisione completa del progetto su branch `rebuild`. tsc e `next build` puliti, 
 
 ### 9.4 In sospeso — login account (Fase 5 sez. 5.1)
 **BLOCCATO**: `NEXT_PUBLIC_SUPABASE_ANON_KEY` è vuota → il client browser Supabase non si inizializza e il magic-link login non è verificabile. Schema + RLS già pronti in `data/schema.sql`. Da fare quando la chiave è disponibile (Supabase Dashboard → Project Settings → API → "anon public"): magic-link login + merge cronologia/like locali con il server. L'app è **pienamente funzionante senza login** (libreria locale).
+
+### 9.5 Flusso unico curato — "set DJ che viaggia" (2026-06-19)
+Su feedback di Edo: una sola navigazione (rimossi Course/Whirl), niente run di brani dello stesso paese, esperienza autentica di scoperta. Decisioni: **bilanciamento morbido**, **scoperta ancorata**, **andamento set DJ**, **rifinitura esperienza**. Concetto: *stessa atmosfera, angolo di mondo diverso*.
+- **`lib/discovery.ts`** (nuovo): famiglie di genere; `curationWeight` (comprime le megastar, favorisce le gemme, smorza i metadati poveri); `regionShares` (∝√dimensione catalogo — `REGION_PLAYABLE` hardcoded, niente COUNT costoso); `buildSequence` (allocazione slot per regione → bilanciamento garantito; interleave che evita la stessa regione di fila; fill con vincoli paese/artista + punteggio di morbidezza famiglia-genere/epoca).
+- **`app/api/discover/route.ts`**: riscritto — campionamento casuale a cursore-uuid **per regione in parallelo**; path dedicato per filtro paese/artista (no bilanciamento, no anti-paese); accetta `recent[]` (ultimi ~6) per continuità e anti-ripetizione tra batch.
+- **Misurato** (whole-world, 120 brani): Europa **27%** (era 52%), tutte le 11 regioni; **0** paesi/artisti/regioni consecutivi uguali; **47%** di coppie consecutive stessa famiglia di genere (baseline ~12%), gap d'epoca medio ~10 anni → set fluido.
+- **UI**: rimosso `ModeSelector` e `FlowMode`; bussola (`CompassIcon` prop `bearing`, mappa `AREA_BEARING` in `lib/geo.ts`) ruota verso la regione del brano; pannello "Set your bearings" (solo aree + decenni).

@@ -10,10 +10,11 @@ import CompassPanel from '@/components/flow/CompassPanel'
 import ArtistSheet, { ArtistInfo } from '@/components/flow/ArtistSheet'
 import ReportSheet, { ReportReason } from '@/components/flow/ReportSheet'
 import { DECADES } from '@/components/controls/DecadeButtons'
-import { Track, FlowMode } from '@/lib/types'
+import { Track } from '@/lib/types'
 import { isInGenrePlaylist, addToGenrePlaylist, isInAnyCompilation, addToDefaultCompilation } from '@/lib/storage/saved'
 import { addToHistory } from '@/lib/storage/history'
 import { useMusicKit } from '@/lib/player/useMusicKit'
+import { bearingFor } from '@/lib/geo'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -44,7 +45,6 @@ interface FlowFilters {
   country?: string
   artistMbId?: string
   artistName?: string
-  mode?: FlowMode
 }
 
 function buildFlowUrl(f: FlowFilters) {
@@ -54,7 +54,6 @@ function buildFlowUrl(f: FlowFilters) {
   if (f.country)         p.set('country',   f.country)
   if (f.artistMbId)      p.set('artist',    f.artistMbId)
   if (f.artistName)      p.set('artistName', f.artistName)
-  if (f.mode && f.mode !== 'course') p.set('mode', f.mode)
   const str = p.toString()
   return `/flow${str ? `?${str}` : ''}`
 }
@@ -82,8 +81,6 @@ export default function FlowContent() {
   const artistNameParam = searchParams.get('artistName') ?? ''
   const sharedTrackId   = searchParams.get('track') ?? ''
   const listMode        = searchParams.get('source') === 'list'   // sequence playback of a saved list
-  const modeParam       = searchParams.get('mode')
-  const mode: FlowMode  = (modeParam === 'whirl' || modeParam === 'vortice') ? 'whirl' : 'course'
 
   // ── State ────────────────────────────────────────────────────────────────
 
@@ -125,7 +122,6 @@ export default function FlowContent() {
       areas, decades, country: country || undefined,
       artistMbId: artistMbId || undefined,
       artistName: artistNameParam || undefined,
-      mode,
     }
   })
   useEffect(() => { queueRef.current = queue }, [queue])
@@ -214,17 +210,15 @@ export default function FlowContent() {
 
     try {
       const f = filtersRef.current
-      const currentTrack = queueRef.current[indexRef.current]
-      const recent = queueRef.current.slice(Math.max(0, indexRef.current - 7), indexRef.current + 1)
+      // Last few played tracks → the engine keeps musical continuity and avoids repeats
+      const recent = queueRef.current.slice(Math.max(0, indexRef.current - 5), indexRef.current + 1)
       const body = {
         areas:       f.areas   ?? [],
         decades:     f.decades ?? [],
         country:     f.country    ?? null,
         artistMbId:  f.artistMbId ?? null,
         artistName:  f.artistName ?? null,
-        mode:        f.mode ?? 'course',
-        currentArea: currentTrack?.macroArea || null,
-        sessionTags: recent.map(t => t.tags || []),
+        recent:      recent.map(t => ({ country: t.country, macroArea: t.macroArea, tags: t.tags, year: t.year, artist: t.artist })),
         exclude:     getSeenIds().slice(-400),
       }
       const res  = await fetch('/api/discover', {
@@ -409,17 +403,17 @@ export default function FlowContent() {
 
   const handleAreaTap = (area: string) => {
     const f = filtersRef.current
-    goWithFilters({ areas: [area], decades: f.decades, mode: f.mode })
+    goWithFilters({ areas: [area], decades: f.decades })
   }
   const handleCountryTap = (code: string) => {
     const f = filtersRef.current
-    goWithFilters({ country: code, decades: f.decades, mode: f.mode })
+    goWithFilters({ country: code, decades: f.decades })
   }
   const handleYearTap = (year: number) => {
     if (!year) return
     const decade = Math.min(2020, Math.max(1950, Math.floor(year / 10) * 10))
     const f = filtersRef.current
-    goWithFilters({ areas: f.areas, country: f.country, decades: [decade], mode: f.mode })
+    goWithFilters({ areas: f.areas, country: f.country, decades: [decade] })
   }
 
   const openArtistCard = async () => {
@@ -508,7 +502,7 @@ export default function FlowContent() {
   }
 
   const currentSaveState = saveStates[current.id] ?? 'none'
-  const needleSpinning   = mode === 'whirl' && (fetching || loading)
+  const needleSpinning   = fetching || loading           // the needle spins while finding music
   const directionKey     = searchParams.toString()
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -539,6 +533,7 @@ export default function FlowContent() {
             >
               <CompassIcon
                 spinning={needleSpinning}
+                bearing={bearingFor(current.macroArea)}
                 nudge={directionKey}
                 size={24}
                 className="text-ink opacity-60 group-hover:opacity-100 transition-opacity duration-200"
@@ -604,11 +599,10 @@ export default function FlowContent() {
         open={panelOpen}
         initialAreas={areas}
         initialDecades={decades}
-        initialMode={mode}
         fetching={fetching}
         directionKey={directionKey}
         onClose={() => setPanelOpen(false)}
-        onGo={(a, d, m) => { setPanelOpen(false); goWithFilters({ areas: a, decades: d, mode: m }) }}
+        onGo={(a, d) => { setPanelOpen(false); goWithFilters({ areas: a, decades: d }) }}
         onHome={() => router.push('/')}
       />
 

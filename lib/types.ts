@@ -27,9 +27,6 @@ export interface Compilation {
   createdAt: number
 }
 
-// 'course'/'whirl' are the canonical names; 'rotta'/'vortice' kept as aliases
-export type FlowMode = 'course' | 'whirl' | 'rotta' | 'vortice'
-
 export interface HistoryEntry {
   id: string
   title: string

@@ -3,8 +3,6 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import WorldMap from '@/components/map/WorldMap'
 import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
-import ModeSelector from '@/components/controls/ModeSelector'
-import { FlowMode } from '@/lib/types'
 import { getDailyDestination, dailyLabel } from '@/lib/daily'
 
 export default function HomeScreen() {
@@ -12,7 +10,6 @@ export default function HomeScreen() {
   // Empty selections mean "whole world" / "all decades" (defaults, sez. 4.2)
   const [areas, setAreas] = useState<string[]>([])
   const [decades, setDecades] = useState<number[]>([])
-  const [mode, setMode] = useState<FlowMode>('course')
 
   const daily = getDailyDestination()
 
@@ -32,7 +29,6 @@ export default function HomeScreen() {
     const p = new URLSearchParams()
     if (areas.length > 0) p.set('areas', areas.join(','))
     if (decades.length > 0) p.set('decades', decades.join(','))
-    if (mode !== 'course') p.set('mode', mode)
     const str = p.toString()
     router.push(`/flow${str ? `?${str}` : ''}`)
   }
@@ -84,9 +80,6 @@ export default function HomeScreen() {
 
         {/* Decades */}
         <DecadeButtons selected={decades} onToggle={toggleDecade} />
-
-        {/* Mode */}
-        <ModeSelector mode={mode} onChange={setMode} />
 
         {/* Daily destination + play */}
         <div className="flex flex-col items-center gap-5 pt-2">
