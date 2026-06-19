@@ -90,3 +90,15 @@ export function removeTrackFromCompilation(trackId: string, compilationId: strin
     localStorage.setItem(COMP_KEY, JSON.stringify(compilations))
   }
 }
+
+// Move a track up (-1) or down (+1) within a compilation.
+export function moveTrackInCompilation(compilationId: string, trackId: string, dir: -1 | 1): void {
+  const compilations = getCompilations()
+  const comp = compilations.find(c => c.id === compilationId)
+  if (!comp) return
+  const i = comp.tracks.findIndex(t => t.id === trackId)
+  const j = i + dir
+  if (i < 0 || j < 0 || j >= comp.tracks.length) return
+  ;[comp.tracks[i], comp.tracks[j]] = [comp.tracks[j], comp.tracks[i]]
+  localStorage.setItem(COMP_KEY, JSON.stringify(compilations))
+}

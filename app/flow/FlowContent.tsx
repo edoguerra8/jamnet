@@ -18,6 +18,7 @@ import { useMusicKit } from '@/lib/player/useMusicKit'
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const SEEN_KEY = 'jamnet_seen'
+const PLAY_QUEUE_KEY = 'jamnet_play_queue'   // sessionStorage handoff for sequence playback
 const REFETCH_THRESHOLD = 3
 const SCRUB_START_MS = 320   // first fast-scrub interval
 const SCRUB_MIN_MS   = 70    // fastest interval (acceleration floor)
@@ -80,6 +81,7 @@ export default function FlowContent() {
   const artistMbId      = searchParams.get('artist') ?? ''
   const artistNameParam = searchParams.get('artistName') ?? ''
   const sharedTrackId   = searchParams.get('track') ?? ''
+  const listMode        = searchParams.get('source') === 'list'   // sequence playback of a saved list
   const modeParam       = searchParams.get('mode')
   const mode: FlowMode  = (modeParam === 'whirl' || modeParam === 'vortice') ? 'whirl' : 'course'
 
@@ -255,6 +257,18 @@ export default function FlowContent() {
   useEffect(() => {
     let cancelled = false
     const load = async () => {
+      if (listMode) {
+        try {
+          const stored = JSON.parse(sessionStorage.getItem(PLAY_QUEUE_KEY) || '[]') as Track[]
+          if (!cancelled && stored.length) {
+            for (const t of stored) addSeenId(t.id)
+            const states: Record<string, SaveState> = {}
+            for (const t of stored) states[t.id] = getSaveState(t.id)
+            setQueue(stored); setIndex(0); setSaveStates(states); setLoading(false)
+            return
+          }
+        } catch { /* fall through to normal discovery */ }
+      }
       if (sharedTrackId) {
         setLoading(true)
         try {
@@ -277,12 +291,13 @@ export default function FlowContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
-  // Prefetch more when the queue runs low (also feeds forward fast-scroll)
+  // Prefetch more when the queue runs low (also feeds forward fast-scroll).
+  // Skipped in list mode — a saved list plays exactly its tracks, no discovery.
   useEffect(() => {
-    if (!current) return
+    if (!current || listMode) return
     const remaining = queue.length - index
     if (remaining < REFETCH_THRESHOLD && !fetching && !loading) fetchTracks(true)
-  }, [index, queue.length, current, fetching, loading, fetchTracks])
+  }, [index, queue.length, current, fetching, loading, fetchTracks, listMode])
 
   // React to the settled current track (skipped while fast-scrubbing)
   useEffect(() => {
