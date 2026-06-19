@@ -26,8 +26,8 @@ export default function ModeSelector({ mode, onChange }: Props) {
   return (
     <div role="radiogroup" aria-label="Flow mode" className="flex rounded-lg border border-border p-0.5">
       {([
-        { value: 'rotta' as FlowMode, label: 'Course', tilted: false },
-        { value: 'vortice' as FlowMode, label: 'Whirl', tilted: true },
+        { value: 'course' as FlowMode, label: 'Course', tilted: false },
+        { value: 'whirl' as FlowMode, label: 'Whirl', tilted: true },
       ]).map(opt => {
         const active = mode === opt.value
         return (

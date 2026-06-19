@@ -12,7 +12,7 @@ export default function Home() {
   // Empty selections mean "whole world" / "all decades" (defaults, sez. 4.2)
   const [areas, setAreas] = useState<string[]>([])
   const [decades, setDecades] = useState<number[]>([])
-  const [mode, setMode] = useState<FlowMode>('rotta')
+  const [mode, setMode] = useState<FlowMode>('course')
 
   const daily = getDailyDestination()
 
@@ -32,7 +32,7 @@ export default function Home() {
     const p = new URLSearchParams()
     if (areas.length > 0) p.set('areas', areas.join(','))
     if (decades.length > 0) p.set('decades', decades.join(','))
-    if (mode !== 'rotta') p.set('mode', mode)
+    if (mode !== 'course') p.set('mode', mode)
     const str = p.toString()
     router.push(`/flow${str ? `?${str}` : ''}`)
   }

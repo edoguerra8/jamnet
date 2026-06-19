@@ -3,21 +3,26 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
 import CompassIcon from '@/components/ui/CompassIcon'
-import HeartButton, { SaveState } from '@/components/ui/HeartButton'
-import WorldMap from '@/components/map/WorldMap'
-import DecadeButtons, { DECADES } from '@/components/controls/DecadeButtons'
-import ModeSelector from '@/components/controls/ModeSelector'
+import { SaveState } from '@/components/ui/HeartButton'
+import TrackCard from '@/components/flow/TrackCard'
+import PlayerControls from '@/components/flow/PlayerControls'
+import CompassPanel from '@/components/flow/CompassPanel'
+import ArtistSheet, { ArtistInfo } from '@/components/flow/ArtistSheet'
+import ReportSheet, { ReportReason } from '@/components/flow/ReportSheet'
+import { DECADES } from '@/components/controls/DecadeButtons'
 import { Track, FlowMode } from '@/lib/types'
 import { isInGenrePlaylist, addToGenrePlaylist, isInAnyCompilation, addToDefaultCompilation } from '@/lib/storage/saved'
 import { addToHistory } from '@/lib/storage/history'
+import { useMusicKit } from '@/lib/player/useMusicKit'
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const SEEN_KEY  = 'jamnet_seen'
+const SEEN_KEY = 'jamnet_seen'
 const REFETCH_THRESHOLD = 3
-const MK_CDN    = 'https://js-cdn.music.apple.com/musickit/v3/musickit.js'
+const SCRUB_START_MS = 320   // first fast-scrub interval
+const SCRUB_MIN_MS   = 70    // fastest interval (acceleration floor)
 
-// ── Seen-IDs helpers ────────────────────────────────────────────────────────
+// ── Seen-IDs helpers (anti-repeat across the session) ───────────────────────
 
 function getSeenIds(): string[] {
   try { return JSON.parse(sessionStorage.getItem(SEEN_KEY) || '[]') } catch { return [] }
@@ -28,39 +33,6 @@ function addSeenId(id: string) {
     s.add(id)
     sessionStorage.setItem(SEEN_KEY, JSON.stringify([...s].slice(-600)))
   } catch {}
-}
-
-// ── Country display ────────────────────────────────────────────────────────
-
-function countryName(code: string): string {
-  if (!code) return ''
-  try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(code) || code }
-  catch { return code }
-}
-
-// ── MusicKit JS types ──────────────────────────────────────────────────────
-
-interface MKInstance {
-  isAuthorized: boolean
-  playbackState: number
-  authorize(): Promise<string>
-  setQueue(opts: { song: string }): Promise<void>
-  play(): Promise<void>
-  pause(): void
-  stop(): void
-  addEventListener(event: string, handler: () => void): void
-  removeEventListener(event: string, handler: () => void): void
-}
-
-declare global {
-  interface Window {
-    MusicKit: {
-      configure(config: object): void
-      getInstance(): MKInstance
-      // playbackState numeric constants
-      PlaybackStates: { none: 0; loading: 1; playing: 2; paused: 3; stopped: 4; ended: 5 }
-    }
-  }
 }
 
 // ── URL helpers ─────────────────────────────────────────────────────────────
@@ -76,12 +48,12 @@ interface FlowFilters {
 
 function buildFlowUrl(f: FlowFilters) {
   const p = new URLSearchParams()
-  if (f.areas?.length)  p.set('areas',      f.areas.join(','))
+  if (f.areas?.length)   p.set('areas',     f.areas.join(','))
   if (f.decades?.length) p.set('decades',   f.decades.join(','))
   if (f.country)         p.set('country',   f.country)
   if (f.artistMbId)      p.set('artist',    f.artistMbId)
   if (f.artistName)      p.set('artistName', f.artistName)
-  if (f.mode && f.mode !== 'rotta') p.set('mode', f.mode)
+  if (f.mode && f.mode !== 'course') p.set('mode', f.mode)
   const str = p.toString()
   return `/flow${str ? `?${str}` : ''}`
 }
@@ -90,15 +62,6 @@ function getSaveState(id: string): SaveState {
   if (!isInGenrePlaylist(id)) return 'none'
   if (isInAnyCompilation(id)) return 'both'
   return 'genre'
-}
-
-// ── Artist card data ─────────────────────────────────────────────────────────
-
-interface ArtistInfo {
-  name: string
-  bioShort: string | null
-  country: string | null
-  macroArea: string | null
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
@@ -113,46 +76,47 @@ export default function FlowContent() {
   const decades = decadesParam
     ? decadesParam.split(',').map(Number).filter(d => DECADES.includes(d))
     : []
-  const country       = searchParams.get('country') ?? ''
-  const artistMbId    = searchParams.get('artist') ?? ''
+  const country         = searchParams.get('country') ?? ''
+  const artistMbId      = searchParams.get('artist') ?? ''
   const artistNameParam = searchParams.get('artistName') ?? ''
-  const sharedTrackId = searchParams.get('track') ?? ''
-  const mode: FlowMode = searchParams.get('mode') === 'vortice' ? 'vortice' : 'rotta'
+  const sharedTrackId   = searchParams.get('track') ?? ''
+  const modeParam       = searchParams.get('mode')
+  const mode: FlowMode  = (modeParam === 'whirl' || modeParam === 'vortice') ? 'whirl' : 'course'
 
   // ── State ────────────────────────────────────────────────────────────────
 
-  const [queue,        setQueue]        = useState<Track[]>([])
-  const [index,        setIndex]        = useState(0)
-  const [loading,      setLoading]      = useState(true)
-  const [fetching,     setFetching]     = useState(false)
+  const [queue,         setQueue]         = useState<Track[]>([])
+  const [index,         setIndex]         = useState(0)
+  const [loading,       setLoading]       = useState(true)
+  const [fetching,      setFetching]      = useState(false)
   const [hasInteracted, setHasInteracted] = useState(false)
-  const [isPlaying,    setIsPlaying]    = useState(false)
-  const [saveStates,   setSaveStates]   = useState<Record<string, SaveState>>({})
-  const [usingPreview, setUsingPreview] = useState(false)  // true when playing iTunes 30s fallback
-  const [mkReady,      setMkReady]      = useState(false)
+  const [saveStates,    setSaveStates]    = useState<Record<string, SaveState>>({})
+  const [usingPreview,  setUsingPreview]  = useState(false)
+  const [scrubbing,     setScrubbing]     = useState<1 | -1 | null>(null)
 
   // Overlays
-  const [panelOpen,    setPanelOpen]    = useState(false)
-  const [panelAreas,   setPanelAreas]   = useState<string[]>(areas)
-  const [panelDecades, setPanelDecades] = useState<number[]>(decades)
-  const [panelMode,    setPanelMode]    = useState<FlowMode>(mode)
-  const [reportOpen,   setReportOpen]   = useState(false)
-  const [reportSent,   setReportSent]   = useState(false)
-  const [artistOpen,   setArtistOpen]   = useState(false)
-  const [artistInfo,   setArtistInfo]   = useState<ArtistInfo | null>(null)
+  const [panelOpen,     setPanelOpen]     = useState(false)
+  const [reportOpen,    setReportOpen]    = useState(false)
+  const [reportSent,    setReportSent]    = useState(false)
+  const [artistOpen,    setArtistOpen]    = useState(false)
+  const [artistInfo,    setArtistInfo]    = useState<ArtistInfo | null>(null)
   const [artistLoading, setArtistLoading] = useState(false)
-  const [linkCopied,   setLinkCopied]   = useState(false)
+  const [linkCopied,    setLinkCopied]    = useState(false)
 
   // ── Refs ─────────────────────────────────────────────────────────────────
 
   const audioRef         = useRef<HTMLAudioElement>(null)
-  const mkRef            = useRef<MKInstance | null>(null)
   const fetchingRef      = useRef(false)
   const filtersRef       = useRef<FlowFilters>({})
   const queueRef         = useRef(queue)
   const indexRef         = useRef(index)
   const hasInteractedRef = useRef(hasInteracted)
-  const nextTrackRef     = useRef<(() => void) | null>(null)
+  const loadedIdRef      = useRef<string | null>(null)   // appleMusId currently queued in MusicKit
+  const settleRef        = useRef<(() => void) | null>(null)
+  const scrubbingRef     = useRef<1 | -1 | null>(null)
+  const scrubTimerRef    = useRef<number | null>(null)
+  const scrubDelayRef    = useRef(SCRUB_START_MS)
+  const scrubSafetyRef   = useRef<number | null>(null)   // hard stop if pointerup is lost
 
   useEffect(() => {
     filtersRef.current = {
@@ -162,51 +126,81 @@ export default function FlowContent() {
       mode,
     }
   })
-  useEffect(() => { queueRef.current  = queue   }, [queue])
-  useEffect(() => { indexRef.current  = index   }, [index])
+  useEffect(() => { queueRef.current = queue }, [queue])
+  useEffect(() => { indexRef.current = index }, [index])
   useEffect(() => { hasInteractedRef.current = hasInteracted }, [hasInteracted])
 
-  // ── Load & configure MusicKit JS ─────────────────────────────────────────
+  const current = queue[index]
 
-  useEffect(() => {
-    const configure = () => {
-      window.MusicKit.configure({
-        developerToken: process.env.NEXT_PUBLIC_APPLE_MUSIC_DEVELOPER_TOKEN,
-        app: { name: 'JamNet', build: '1.0.0' },
-      })
-      mkRef.current = window.MusicKit.getInstance()
-      setMkReady(true)
-    }
+  // ── Index helpers ──────────────────────────────────────────────────────────
 
-    if (window.MusicKit) {
-      configure()
-    } else {
-      document.addEventListener('musickitloaded', configure, { once: true })
-      if (!document.querySelector(`script[src="${MK_CDN}"]`)) {
-        const s = document.createElement('script')
-        s.src   = MK_CDN
-        s.async = true
-        document.head.appendChild(s)
-      }
-    }
+  const stepIndex = useCallback((dir: 1 | -1) => {
+    setIndex(i => {
+      const q = queueRef.current
+      const ni = i + dir
+      return ni < 0 ? 0 : ni > q.length - 1 ? Math.max(0, q.length - 1) : ni
+    })
   }, [])
 
-  // ── MusicKit playback state listener ─────────────────────────────────────
+  // ── MusicKit (Apple Music) ──────────────────────────────────────────────────
 
-  useEffect(() => {
-    const mk = mkRef.current
-    if (!mkReady || !mk) return
+  const handleEnded = useCallback(() => { stepIndex(1) }, [stepIndex])
+  const mk = useMusicKit(handleEnded)
 
-    const onChange = () => {
-      const s = mk.playbackState
-      if      (s === 2) setIsPlaying(true)               // playing
-      else if (s === 3 || s === 4 || s === 0) setIsPlaying(false) // paused/stopped/none
-      else if (s === 5) nextTrackRef.current?.()          // ended → advance
+  // Load & play the track at the current index (Apple Music, else iTunes preview).
+  const loadCurrent = useCallback(() => {
+    const cur = queueRef.current[indexRef.current]
+    if (!cur) return
+    const audio = audioRef.current
+
+    if (cur.appleMusId) {
+      // Playable via Apple Music. If MusicKit isn't ready yet (still loading, or a
+      // non-Safari browser) we WAIT — never auto-skip — using the preview as a
+      // stopgap when one exists. The mk.ready effect re-settles once it loads.
+      if (audio) { audio.pause(); audio.src = '' }
+      if (mk.ready) {
+        setUsingPreview(false)
+        if (!hasInteractedRef.current) { loadedIdRef.current = null; return } // authorize only from a gesture
+        loadedIdRef.current = cur.appleMusId
+        mk.playSong(cur.appleMusId).catch(() => {
+          if (cur.previewUrl && audio) {
+            setUsingPreview(true)
+            audio.src = cur.previewUrl
+            audio.play().catch(() => {})
+          }
+        })
+      } else if (cur.previewUrl && audio) {
+        setUsingPreview(true)
+        audio.src = cur.previewUrl
+        if (hasInteractedRef.current) audio.play().catch(() => {})
+      } else {
+        setUsingPreview(false)
+      }
+    } else if (cur.previewUrl) {
+      mk.stop()
+      loadedIdRef.current = null
+      setUsingPreview(true)
+      if (audio) {
+        audio.src = cur.previewUrl
+        if (hasInteractedRef.current) audio.play().catch(() => {})
+      }
+    } else {
+      // Truly nothing playable (shouldn't happen — discover only returns playable
+      // tracks). Skip forward as a last resort.
+      stepIndex(1)
     }
+  }, [mk, stepIndex])
 
-    mk.addEventListener('playbackStateDidChange', onChange)
-    return () => mk.removeEventListener('playbackStateDidChange', onChange)
-  }, [mkReady])
+  // Side-effects when a track becomes the settled "current": history, report reset, playback.
+  const settle = useCallback(() => {
+    const cur = queueRef.current[indexRef.current]
+    if (!cur) return
+    setReportSent(false)
+    addToHistory(cur)
+    loadCurrent()
+  }, [loadCurrent])
+
+  useEffect(() => { settleRef.current = settle })
 
   // ── Fetch tracks from Supabase ────────────────────────────────────────────
 
@@ -219,25 +213,25 @@ export default function FlowContent() {
     try {
       const f = filtersRef.current
       const currentTrack = queueRef.current[indexRef.current]
-      // Tags from the last few played tracks → drives the diversity check server-side
       const recent = queueRef.current.slice(Math.max(0, indexRef.current - 7), indexRef.current + 1)
       const body = {
-        areas:      f.areas   ?? [],
-        decades:    f.decades ?? [],
-        country:    f.country    ?? null,
-        artistMbId: f.artistMbId ?? null,
-        artistName: f.artistName ?? null,
-        mode:       f.mode ?? 'rotta',
+        areas:       f.areas   ?? [],
+        decades:     f.decades ?? [],
+        country:     f.country    ?? null,
+        artistMbId:  f.artistMbId ?? null,
+        artistName:  f.artistName ?? null,
+        mode:        f.mode ?? 'course',
         currentArea: currentTrack?.macroArea || null,
         sessionTags: recent.map(t => t.tags || []),
-        exclude:    getSeenIds().slice(-400),
+        exclude:     getSeenIds().slice(-400),
       }
-      const res  = await fetch('/api/discover', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const res  = await fetch('/api/discover', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
       const data = await res.json()
       const newTracks: Track[] = data.tracks ?? []
 
       for (const t of newTracks) addSeenId(t.id)
-
       const newStates: Record<string, SaveState> = {}
       for (const t of newTracks) newStates[t.id] = getSaveState(t.id)
 
@@ -257,7 +251,7 @@ export default function FlowContent() {
     }
   }, [])
 
-  // Initial load
+  // Initial load (shared track link, or a fresh fetch)
   useEffect(() => {
     let cancelled = false
     const load = async () => {
@@ -283,121 +277,103 @@ export default function FlowContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
-  // Sync panel with params on open
-  useEffect(() => {
-    if (panelOpen) {
-      const f = filtersRef.current
-      setPanelAreas(f.areas ?? [])
-      setPanelDecades(f.decades ?? [])
-      setPanelMode(f.mode ?? 'rotta')
-    }
-  }, [panelOpen])
-
-  // ── Current track ─────────────────────────────────────────────────────────
-
-  const current = queue[index]
-
-  // Prefetch
+  // Prefetch more when the queue runs low (also feeds forward fast-scroll)
   useEffect(() => {
     if (!current) return
     const remaining = queue.length - index
     if (remaining < REFETCH_THRESHOLD && !fetching && !loading) fetchTracks(true)
   }, [index, queue.length, current, fetching, loading, fetchTracks])
 
-  // History
-  useEffect(() => {
-    if (current) addToHistory(current)
-  }, [current?.id]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // ── React to current track changes ───────────────────────────────────────
-  // Only stop/reset state here. Actual MusicKit authorize+setQueue+play
-  // happens in togglePlay so it always runs from a user gesture (iOS requirement).
-
+  // React to the settled current track (skipped while fast-scrubbing)
   useEffect(() => {
     if (!current) return
-
-    // Stop current playback
-    if (mkRef.current) mkRef.current.stop()
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = '' }
-    setIsPlaying(false)
-
-    if (current.appleMusId) {
-      setUsingPreview(false)
-      // If already interacted, re-trigger play via togglePlay equivalent
-      if (hasInteractedRef.current && mkRef.current) {
-        const mk = mkRef.current
-        const resume = async () => {
-          if (!mk.isAuthorized) await mk.authorize()
-          await mk.setQueue({ song: current.appleMusId! })
-          await mk.play()
-        }
-        resume().catch(() => {
-          if (current.previewUrl && audioRef.current) {
-            setUsingPreview(true)
-            audioRef.current.src = current.previewUrl
-            audioRef.current.play().catch(() => {})
-          }
-        })
-      }
-    } else if (current.previewUrl) {
-      setUsingPreview(true)
-      if (audioRef.current) {
-        audioRef.current.src = current.previewUrl
-        if (hasInteractedRef.current) audioRef.current.play().catch(() => {})
-      }
-    } else {
-      setIndex(i => Math.min(i + 1, queueRef.current.length - 1))
-    }
+    if (scrubbingRef.current) return
+    settleRef.current?.()
   }, [current?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Navigation / playback controls ───────────────────────────────────────
+  // If the user pressed play before MusicKit finished loading, start once it's ready
+  useEffect(() => {
+    if (mk.ready && hasInteractedRef.current && !scrubbingRef.current && !loadedIdRef.current) {
+      settleRef.current?.()
+    }
+  }, [mk.ready])
 
-  const nextTrack = useCallback(() => {
-    setHasInteracted(true)
-    setIndex(i => {
-      const q = queueRef.current
-      let next = i + 1
-      if (!filtersRef.current.artistMbId && !filtersRef.current.artistName &&
-          next < q.length && q[next]?.artist === q[i]?.artist && next + 1 < q.length) {
-        next = next + 1
-      }
-      return Math.min(next, q.length - 1)
-    })
-    setReportSent(false)
+  // ── Fast-scrub (VHS-style) ──────────────────────────────────────────────────
+
+  const stopScrub = useCallback(() => {
+    if (scrubTimerRef.current)  { clearTimeout(scrubTimerRef.current);  scrubTimerRef.current = null }
+    if (scrubSafetyRef.current) { clearTimeout(scrubSafetyRef.current); scrubSafetyRef.current = null }
+    if (scrubbingRef.current === null) return
+    scrubbingRef.current = null
+    setScrubbing(null)
+    settleRef.current?.()  // land: play the track we stopped on
+  }, [])
+  const stopScrubRef = useRef(stopScrub)
+  useEffect(() => { stopScrubRef.current = stopScrub })
+
+  const scrubTick = useCallback(() => {
+    const dir = scrubbingRef.current
+    if (!dir) return
+    stepIndex(dir)
+    scrubDelayRef.current = Math.max(SCRUB_MIN_MS, Math.round(scrubDelayRef.current * 0.82))
+    scrubTimerRef.current = window.setTimeout(scrubTick, scrubDelayRef.current)
+  }, [stepIndex])
+
+  const startScrub = useCallback((dir: 1 | -1) => {
+    setHasInteracted(true); hasInteractedRef.current = true
+    scrubbingRef.current = dir
+    setScrubbing(dir)
+    scrubDelayRef.current = SCRUB_START_MS
+    stepIndex(dir)
+    scrubTimerRef.current = window.setTimeout(scrubTick, scrubDelayRef.current)
+    // Safety net: if pointerup is somehow lost, stop after a few seconds.
+    if (scrubSafetyRef.current) clearTimeout(scrubSafetyRef.current)
+    scrubSafetyRef.current = window.setTimeout(() => stopScrubRef.current(), 6000)
+  }, [scrubTick, stepIndex])
+
+  const onStep = useCallback((dir: 1 | -1) => {
+    setHasInteracted(true); hasInteractedRef.current = true
+    stepIndex(dir)
+  }, [stepIndex])
+
+  // Stop scrubbing if the tab is hidden or the window loses focus (lost pointerup guard)
+  useEffect(() => {
+    const stop = () => stopScrubRef.current()
+    window.addEventListener('blur', stop)
+    document.addEventListener('visibilitychange', stop)
+    return () => {
+      window.removeEventListener('blur', stop)
+      document.removeEventListener('visibilitychange', stop)
+      if (scrubTimerRef.current)  clearTimeout(scrubTimerRef.current)
+      if (scrubSafetyRef.current) clearTimeout(scrubSafetyRef.current)
+    }
   }, [])
 
-  nextTrackRef.current = nextTrack
+  // ── Play / pause ─────────────────────────────────────────────────────────
 
-  const togglePlay = () => {
-    if (!current) return
-    setHasInteracted(true)
+  const togglePlay = useCallback(() => {
+    const cur = queueRef.current[indexRef.current]
+    if (!cur) return
+    setHasInteracted(true); hasInteractedRef.current = true
 
-    if (current.appleMusId && mkRef.current) {
-      const mk = mkRef.current
-      if (mk.playbackState === 2) {
-        mk.pause()
-      } else {
-        const startPlay = async () => {
-          // authorize (user gesture is active here — safe on iOS)
-          if (!mk.isAuthorized) await mk.authorize()
-          // always set queue so the correct track is loaded
-          await mk.setQueue({ song: current.appleMusId! })
-          await mk.play()
+    if (cur.appleMusId && mk.ready) {
+      if (mk.isPlaying) { mk.pause(); return }
+      if (loadedIdRef.current === cur.appleMusId) { mk.resume().catch(() => {}); return }
+      loadedIdRef.current = cur.appleMusId
+      mk.playSong(cur.appleMusId).catch(() => {
+        if (cur.previewUrl && audioRef.current) {
+          setUsingPreview(true)
+          audioRef.current.src = cur.previewUrl
+          audioRef.current.play().catch(() => {})
         }
-        startPlay().catch(() => {
-          // MusicKit failed — fall back to preview
-          if (current.previewUrl && audioRef.current) {
-            setUsingPreview(true)
-            audioRef.current.src = current.previewUrl
-            audioRef.current.play().catch(() => {})
-          }
-        })
-      }
-    } else if (current.previewUrl && audioRef.current) {
+      })
+    } else if (cur.previewUrl && audioRef.current) {
       if (audioRef.current.paused) audioRef.current.play().catch(() => {})
       else audioRef.current.pause()
     }
-  }
+  }, [mk])
+
+  const isPlaying = mk.isPlaying || (usingPreview && !!audioRef.current && !audioRef.current.paused)
 
   // ── Save handlers ─────────────────────────────────────────────────────────
 
@@ -406,7 +382,6 @@ export default function FlowContent() {
     addToGenrePlaylist(current)
     setSaveStates(prev => ({ ...prev, [current.id]: 'genre' }))
   }
-
   const handleSaveToCompilation = () => {
     if (!current) return
     addToDefaultCompilation(current)
@@ -421,12 +396,10 @@ export default function FlowContent() {
     const f = filtersRef.current
     goWithFilters({ areas: [area], decades: f.decades, mode: f.mode })
   }
-
   const handleCountryTap = (code: string) => {
     const f = filtersRef.current
     goWithFilters({ country: code, decades: f.decades, mode: f.mode })
   }
-
   const handleYearTap = (year: number) => {
     if (!year) return
     const decade = Math.min(2020, Math.max(1950, Math.floor(year / 10) * 10))
@@ -440,7 +413,7 @@ export default function FlowContent() {
     setArtistLoading(true)
     setArtistInfo(null)
     try {
-      const q   = current.artist_mb_id
+      const q = current.artist_mb_id
         ? `mbId=${encodeURIComponent(current.artist_mb_id)}`
         : `name=${encodeURIComponent(current.artist)}`
       const res  = await fetch(`/api/artist?${q}`)
@@ -480,36 +453,16 @@ export default function FlowContent() {
 
   // ── Report ────────────────────────────────────────────────────────────────
 
-  const sendReport = async (motivo: 'wrong_video' | 'wrong_metadata') => {
+  const sendReport = async (reason: ReportReason) => {
     if (!current || reportSent) return
     setReportOpen(false)
     setReportSent(true)
     try {
       await fetch('/api/report', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ track_id: current.id, motivo }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ track_id: current.id, motivo: reason }),
       })
     } catch { /* silent */ }
-  }
-
-  // ── Panel helpers ─────────────────────────────────────────────────────────
-
-  const togglePanelArea = (area: string) => {
-    setPanelAreas(prev => prev.includes(area) ? prev.filter(a => a !== area) : [...prev, area])
-  }
-
-  const togglePanelDecade = (d: number) => {
-    setPanelDecades(prev => {
-      if (prev.length === 0) return [d]
-      const next = prev.includes(d) ? prev.filter(x => x !== d) : [...prev, d]
-      return next.length === 0 || next.length === DECADES.length ? [] : next
-    })
-  }
-
-  const goPanel = () => {
-    setPanelOpen(false)
-    goWithFilters({ areas: panelAreas, decades: panelDecades, mode: panelMode })
   }
 
   // ── Loading / empty states ────────────────────────────────────────────────
@@ -540,21 +493,18 @@ export default function FlowContent() {
   }
 
   const currentSaveState = saveStates[current.id] ?? 'none'
-  const displayCountry   = countryName(current.country)
-  const needleSpinning   = mode === 'vortice' && (fetching || loading)
+  const needleSpinning   = mode === 'whirl' && (fetching || loading)
   const directionKey     = searchParams.toString()
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <>
-      {/* iTunes preview fallback audio element */}
       <audio
         ref={audioRef}
         preload="auto"
-        onEnded={nextTrack}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
+        onEnded={() => stepIndex(1)}
+        onPlay={() => { /* state derived from mk + audio.paused */ }}
       />
 
       <main className="h-dvh overflow-hidden bg-ivory select-none">
@@ -594,120 +544,31 @@ export default function FlowContent() {
           </div>
         </div>
 
-        {/* Track card */}
+        {/* Track card + controls */}
         <div className="h-full flex flex-col items-center justify-between px-6 pt-20 pb-8 pb-safe">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={current.id}
-              className="w-full flex-1 flex flex-col items-center justify-center gap-5"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.25, ease: 'easeInOut' }}
-            >
-              {/* Album art */}
-              <div className="w-full max-w-xs aspect-square rounded-xl overflow-hidden bg-parchment border border-border relative">
-                {current.artworkUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={current.artworkUrl} alt="" className="w-full h-full object-cover" draggable={false} />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <CompassIcon size={48} className="text-muted/40" />
-                  </div>
-                )}
-                {usingPreview && (
-                  <div className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-ink/60 text-ivory text-[10px] font-sans tracking-wide">
-                    preview
-                  </div>
-                )}
-              </div>
+          <TrackCard
+            track={current}
+            usingPreview={usingPreview}
+            scrubbing={scrubbing}
+            onArtistTap={openArtistCard}
+            onCountryTap={handleCountryTap}
+            onAreaTap={handleAreaTap}
+            onYearTap={handleYearTap}
+          />
 
-              {/* Track info */}
-              <div className="w-full max-w-xs flex flex-col gap-1">
-                <h1 className="font-serif text-[1.6rem] leading-tight">{current.title}</h1>
-                <button
-                  onClick={openArtistCard}
-                  className="self-start text-base font-sans opacity-65 hover:opacity-100 hover:text-terracotta transition-colors duration-200 text-left"
-                >
-                  {current.artist}
-                </button>
-                <div className="flex flex-wrap items-center gap-2 text-[13px] font-sans text-muted">
-                  {displayCountry && (
-                    <button onClick={() => handleCountryTap(current.country)} className="hover:text-terracotta transition-colors duration-200">
-                      {displayCountry}
-                    </button>
-                  )}
-                  {displayCountry && current.macroArea && <span className="opacity-40">·</span>}
-                  {current.macroArea && (
-                    <button onClick={() => handleAreaTap(current.macroArea)} className="hover:text-terracotta transition-colors duration-200">
-                      {current.macroArea}
-                    </button>
-                  )}
-                  {Boolean(current.year) && (
-                    <>
-                      <span className="opacity-40">·</span>
-                      <button onClick={() => handleYearTap(current.year)} className="hover:text-terracotta transition-colors duration-200 tabular-nums">
-                        {current.year}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </motion.div>
-          </AnimatePresence>
-
-          {/* Controls: heart · share · play/pause · skip · report */}
-          <div className="w-full max-w-xs flex items-center justify-between pt-4">
-            <HeartButton
-              saveState={currentSaveState}
-              onSaveToGenre={handleSaveToGenre}
-              onSaveToCompilation={handleSaveToCompilation}
-              size={24}
-            />
-
-            <button onClick={shareTrack} className="p-2 -m-2 opacity-40 hover:opacity-100 transition-opacity duration-200" aria-label="Share this track">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" strokeLinecap="round" />
-                <path d="M16 6l-4-4-4 4M12 2v13" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-
-            <button
-              onClick={togglePlay}
-              aria-label={isPlaying ? 'Pause' : 'Play'}
-              className="w-14 h-14 flex items-center justify-center rounded-full bg-terracotta text-ivory hover:opacity-90 active:scale-95 transition-all duration-200"
-            >
-              {isPlaying ? (
-                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
-                  <rect x="3" y="2.5" width="3.4" height="11" rx="1" />
-                  <rect x="9.6" y="2.5" width="3.4" height="11" rx="1" />
-                </svg>
-              ) : (
-                <svg viewBox="0 0 16 16" width="18" height="18" fill="currentColor">
-                  <path d="M4 2.5l9.5 5.5L4 13.5V2.5z" />
-                </svg>
-              )}
-            </button>
-
-            <button onClick={nextTrack} className="p-2 -m-2 opacity-40 hover:opacity-100 transition-opacity duration-200" aria-label="Skip to next track">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor">
-                <path d="M5 4.5l10 7.5-10 7.5V4.5z" />
-                <rect x="17" y="4.5" width="2" height="15" rx="1" />
-              </svg>
-            </button>
-
-            <button
-              onClick={() => { if (!reportSent) setReportOpen(true) }}
-              className={`p-2 -m-2 transition-opacity duration-200 ${reportSent ? 'opacity-20 pointer-events-none' : 'opacity-30 hover:opacity-70'}`}
-              aria-label="Report wrong match"
-            >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" strokeLinejoin="round" />
-                <line x1="12" y1="9" x2="12" y2="13" strokeLinecap="round" />
-                <line x1="12" y1="17" x2="12.01" y2="17" strokeLinecap="round" />
-              </svg>
-            </button>
-          </div>
+          <PlayerControls
+            isPlaying={isPlaying}
+            saveState={currentSaveState}
+            onSaveToGenre={handleSaveToGenre}
+            onSaveToCompilation={handleSaveToCompilation}
+            onShare={shareTrack}
+            onTogglePlay={togglePlay}
+            onStep={onStep}
+            onScrubStart={startScrub}
+            onScrubStop={stopScrub}
+            onReport={() => setReportOpen(true)}
+            reportSent={reportSent}
+          />
         </div>
 
         {/* "Link copied" toast */}
@@ -724,122 +585,34 @@ export default function FlowContent() {
         </AnimatePresence>
       </main>
 
-      {/* ── Compass panel ─────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {panelOpen && (
-          <motion.div
-            className="fixed inset-0 z-50 flex flex-col justify-end"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setPanelOpen(false)} />
-            <motion.div
-              className="relative bg-ivory rounded-t-2xl px-6 pt-7 pb-10 pb-safe max-h-[88dvh] overflow-y-auto"
-              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex flex-col gap-6 max-w-md mx-auto">
-                <div className="flex items-center gap-3">
-                  <CompassIcon size={20} spinning={panelMode === 'vortice' && fetching} nudge={directionKey} className="text-ink" />
-                  <span className="text-sm font-sans text-muted">New direction</span>
-                </div>
-                <div className="flex flex-col gap-2">
-                  <WorldMap selected={panelAreas} onToggle={togglePanelArea} className="w-full" />
-                  <div className="flex justify-center">
-                    <button
-                      onClick={() => setPanelAreas([])}
-                      aria-pressed={panelAreas.length === 0}
-                      className={`px-4 py-1.5 rounded-full text-[13px] font-sans border transition-colors duration-200 ${
-                        panelAreas.length === 0 ? 'bg-terracotta border-terracotta text-ivory' : 'border-border text-muted'
-                      }`}
-                    >
-                      Whole world
-                    </button>
-                  </div>
-                </div>
-                <DecadeButtons selected={panelDecades} onToggle={togglePanelDecade} />
-                <ModeSelector mode={panelMode} onChange={setPanelMode} />
-                <div className="flex justify-between items-center">
-                  <button onClick={() => router.push('/')} className="text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
-                    Back to home
-                  </button>
-                  <button onClick={goPanel} className="px-6 py-2.5 bg-terracotta text-ivory rounded-full text-sm font-sans hover:opacity-90 transition-opacity duration-200">
-                    Go
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <CompassPanel
+        open={panelOpen}
+        initialAreas={areas}
+        initialDecades={decades}
+        initialMode={mode}
+        fetching={fetching}
+        directionKey={directionKey}
+        onClose={() => setPanelOpen(false)}
+        onGo={(a, d, m) => { setPanelOpen(false); goWithFilters({ areas: a, decades: d, mode: m }) }}
+        onHome={() => router.push('/')}
+      />
 
-      {/* ── Artist card ───────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {artistOpen && (
-          <motion.div
-            className="fixed inset-0 z-50 flex items-end justify-center"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setArtistOpen(false)} />
-            <motion.div
-              className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
-              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-            >
-              <h2 className="font-serif text-xl mb-1">{current.artist}</h2>
-              {artistInfo?.country || current.country ? (
-                <p className="text-[12px] font-sans text-muted mb-4">
-                  {countryName(artistInfo?.country || current.country)}
-                  {current.macroArea ? ` · ${current.macroArea}` : ''}
-                </p>
-              ) : <div className="mb-4" />}
-              {artistLoading ? (
-                <p className="text-[14px] font-sans text-muted mb-6">…</p>
-              ) : artistInfo?.bioShort ? (
-                <p className="text-[14px] font-sans leading-relaxed opacity-80 mb-6">{artistInfo.bioShort}</p>
-              ) : (
-                <p className="text-[14px] font-sans text-muted mb-6">No notes on this artist yet.</p>
-              )}
-              <button onClick={listenToArtist} className="w-full px-4 py-3 rounded-xl border border-terracotta text-terracotta text-[14px] font-sans hover:bg-terracotta hover:text-ivory transition-colors duration-200">
-                Listen to more by this artist
-              </button>
-              <button onClick={() => setArtistOpen(false)} className="mt-4 text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
-                Close
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ArtistSheet
+        open={artistOpen}
+        fallbackName={current.artist}
+        fallbackCountry={current.country}
+        fallbackArea={current.macroArea}
+        info={artistInfo}
+        loading={artistLoading}
+        onClose={() => setArtistOpen(false)}
+        onListenMore={listenToArtist}
+      />
 
-      {/* ── Report overlay ────────────────────────────────────────────────── */}
-      <AnimatePresence>
-        {reportOpen && (
-          <motion.div
-            className="fixed inset-0 z-50 flex items-end justify-center"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0 bg-ink/20 backdrop-blur-sm" onClick={() => setReportOpen(false)} />
-            <motion.div
-              className="relative bg-ivory rounded-t-2xl w-full max-w-md px-6 pt-7 pb-10 pb-safe"
-              initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              transition={{ type: 'spring', stiffness: 320, damping: 32 }}
-            >
-              <p className="text-sm font-sans text-muted mb-5">What seems wrong?</p>
-              <div className="flex flex-col gap-3">
-                <button onClick={() => sendReport('wrong_video')} className="w-full text-left px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-terracotta hover:text-terracotta transition-colors duration-200">
-                  Wrong audio — this track doesn&apos;t match
-                </button>
-                <button onClick={() => sendReport('wrong_metadata')} className="w-full text-left px-4 py-3 rounded-xl border border-border text-[14px] font-sans hover:border-terracotta hover:text-terracotta transition-colors duration-200">
-                  Wrong metadata — title, artist or year is incorrect
-                </button>
-              </div>
-              <button onClick={() => setReportOpen(false)} className="mt-5 text-sm font-sans text-muted hover:text-terracotta transition-colors duration-200">
-                Cancel
-              </button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ReportSheet
+        open={reportOpen}
+        onClose={() => setReportOpen(false)}
+        onReport={sendReport}
+      />
     </>
   )
 }
