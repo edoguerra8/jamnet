@@ -174,6 +174,24 @@ A('Artist variety stays high vs baseline (within 0.1)', distinctArtistRatio(s1.s
   A('Cooldown cuts clustering ≥3x in narrow pool', baseV > 0 && algoV <= baseV / 3, `algo ${algoV} vs baseline ${baseV} clustered repeats`)
 }
 
+// Phase 2 path: when every row carries a precomputed interest_score, selectBatch
+// must use it and still honour cooldown / batch size.
+{
+  const pre = buildCatalog(mulberry32(9), 400, 4000).map((r, i) => ({ ...r, interest_score: (i % 97) / 97 }))
+  const session = (() => {
+    const rng = mulberry32(44); const seen = new Set<string>(); const seq: DiscoveryRow[] = []
+    while (seq.length < SESSION_LEN) {
+      const pool = samplePool(pre, seen, rng)
+      if (!pool.length) break
+      const { picked } = selectBatch(pool, { sessionDepth: seen.size, sessionTags: [], batchSize: BATCH, rng })
+      if (!picked.length) break
+      for (const p of picked) { seen.add(p.id); seq.push(p) }
+    }
+    return seq
+  })()
+  A('Precomputed interest_score path works (Phase 2)', session.length === SESSION_LEN && maxArtistRunViolation(session, 6) === 0, `${session.length} tracks, ${maxArtistRunViolation(session, 6)} violations`)
+}
+
 console.log('\n  JamNet discovery — offline simulation')
 console.log('  ' + '─'.repeat(60))
 console.log(`  catalog: ${catalog.length} tracks, ${new Set(catalog.map(c=>c.artist_mb_id)).size} artists, median quality ${medianQ}`)
