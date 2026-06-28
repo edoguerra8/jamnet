@@ -3,7 +3,7 @@ import { Track } from './types'
 // Shared between /api/discover and /api/track
 
 export const TRACK_COLUMNS =
-  'id, mb_recording_id, title, artist_name, artist_mb_id, artwork_url, apple_music_id, youtube_video_id, itunes_preview_url, is_new_release, year, country, macro_area, tags, weight, quality_score'
+  'id, mb_recording_id, title, artist_name, artist_mb_id, artwork_url, apple_music_id, youtube_video_id, itunes_preview_url, is_new_release, year, country, macro_area, tags, weight, quality_score, interest_score, track_listeners'
 
 export function dbRowToTrack(r: Record<string, unknown>): Track {
   return {

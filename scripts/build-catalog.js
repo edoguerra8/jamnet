@@ -97,6 +97,8 @@ const SKIP_FW    = ARGV.includes('--skip-folkways')
 const AP_ONLY    = ARGV.includes('--apple-only')
 const SKIP_AP    = ARGV.includes('--skip-apple')
 const ART_ONLY   = ARGV.includes('--artwork-only')
+const INTEREST_ONLY = ARGV.includes('--interest-only')
+const SKIP_INTEREST = ARGV.includes('--skip-interest')
 const DRY_RUN    = Boolean(WD_TEST) || Boolean(LF_TEST) || Boolean(SP_TEST) || Boolean(DG_TEST) || Boolean(FW_TEST)
 
 let ENV = {}
@@ -2062,6 +2064,110 @@ async function logSummary() {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+// ── Interest score (Fase 2) ──────────────────────────────────────────────────
+// Punteggio di "interesse" GLOBALE precalcolato, consumato da /api/discover
+// (lib/discovery preferisce questo quando ogni riga del pool lo possiede):
+//   interest = wQuality·Q + wGem·G + wDistinct·D    (ogni componente 0..1)
+//   • Q  qualità/popolarità: quality_score normalizzato (denom fisso, stabile fra run)
+//   • G  gem: la traccia "buca" rispetto al suo artista (track_listeners vs listeners artista)
+//   • D  distintività: rarità dei tag DENTRO la macro-area (IDF globale, non pool-local)
+// I pesi rispecchiano DISCOVERY_CONFIG in lib/discovery.ts — tenerli allineati.
+const INTEREST_W = { quality: 0.55, gem: 0.20, distinct: 0.25 }
+const INTEREST_Q_DENOM = 140   // ~ tetto pratico di quality_score (recog 120 + apple 8 + bonus)
+
+function clamp01(x) { return Math.max(0, Math.min(1, x)) }
+
+async function loadAllTracksForInterest() {
+  const out = []
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('tracks')
+      .select('id, macro_area, tags, quality_score, track_listeners, artist_mb_id')
+      .range(from, from + PAGE - 1)
+    if (error) { console.warn('  loadTracks:', error.message); break }
+    if (!data?.length) break
+    out.push(...data)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return out
+}
+
+async function loadArtistListeners() {
+  const map = new Map()
+  const PAGE = 1000
+  let from = 0
+  for (;;) {
+    const { data, error } = await sb.from('artists')
+      .select('mb_artist_id, listeners')
+      .range(from, from + PAGE - 1)
+    if (error || !data?.length) break
+    for (const a of data) map.set(a.mb_artist_id, Number(a.listeners) || 0)
+    if (data.length < PAGE) break
+    from += PAGE
+  }
+  return map
+}
+
+async function runInterestStage() {
+  console.log('\n──── Interest score (Fase 2) ────')
+  const tracks = await loadAllTracksForInterest()
+  if (!tracks.length) { console.log('  nessuna traccia'); return }
+  const artistListeners = await loadArtistListeners()
+
+  // Frequenza dei tag PER macro-area (distintività globale).
+  const areaDf = new Map()     // area -> Map(tag -> count)
+  const areaCount = new Map()  // area -> n tracce
+  for (const t of tracks) {
+    const area = t.macro_area || '∅'
+    areaCount.set(area, (areaCount.get(area) || 0) + 1)
+    let df = areaDf.get(area)
+    if (!df) { df = new Map(); areaDf.set(area, df) }
+    for (const tag of new Set(t.tags || [])) df.set(tag, (df.get(tag) || 0) + 1)
+  }
+  const idf = (area, tag) => {
+    const n = areaCount.get(area) || 1
+    const df = (areaDf.get(area)?.get(tag)) || 0
+    return Math.log(n / (1 + df))
+  }
+  // Normalizzazione di D per-area: massimo IDF medio osservato nell'area.
+  const areaMaxAvgIdf = new Map()
+  for (const t of tracks) {
+    const area = t.macro_area || '∅'
+    const tags = t.tags || []
+    const avg = tags.length ? tags.reduce((s, tag) => s + idf(area, tag), 0) / tags.length : 0
+    if (avg > (areaMaxAvgIdf.get(area) || 0)) areaMaxAvgIdf.set(area, avg)
+  }
+
+  const interestOf = (t) => {
+    const area = t.macro_area || '∅'
+    const q = clamp01((Number(t.quality_score) || 0) / INTEREST_Q_DENOM)
+    const tl = Number(t.track_listeners) || 0
+    const al = artistListeners.get(t.artist_mb_id) || 0
+    // gem: quanto la traccia "buca" rispetto alla scala del suo artista (0.5 = in linea)
+    const g = tl > 0 ? clamp01(0.5 + (Math.log10(tl + 10) - Math.log10(al + 10)) / 4) : 0
+    const tags = t.tags || []
+    const maxIdf = Math.max(1e-6, areaMaxAvgIdf.get(area) || 0)
+    const d = tags.length ? clamp01((tags.reduce((s, tag) => s + idf(area, tag), 0) / tags.length) / maxIdf) : 0
+    return INTEREST_W.quality * q + INTEREST_W.gem * g + INTEREST_W.distinct * d
+  }
+
+  let done = 0
+  const CHUNK = 25
+  for (let i = 0; i < tracks.length; i += CHUNK) {
+    const slice = tracks.slice(i, i + CHUNK)
+    await Promise.all(slice.map(t => {
+      const interest = Math.round(interestOf(t) * 1e6) / 1e6
+      return sb.from('tracks').update({ interest_score: interest }).eq('id', t.id)
+        .then(({ error }) => { if (error) console.warn('  update interest:', error.message) })
+    }))
+    done += slice.length
+    process.stdout.write(`\r  scored ${done}/${tracks.length}`)
+  }
+  console.log(`\n  ✓ interest_score aggiornato per ${done} tracce su ${areaCount.size} aree`)
+}
+
 async function main() {
   console.log('JamNet build-catalog — started at', new Date().toISOString())
   const cp = loadCheckpoint()
@@ -2070,14 +2176,17 @@ async function main() {
 
   const areaEntries = Object.entries(REGIONS).filter(([, v]) => v && Array.isArray(v.musicbrainz_countries))
 
-  const runMB = !WD_ONLY && !LF_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
-  const runWD = !SKIP_WD && !LF_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
-  const runLF = !SKIP_LF && !WD_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
-  const runSP = !SKIP_SP && !WD_ONLY && !LF_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
-  const runDG  = !SKIP_DG && !WD_ONLY && !LF_ONLY && !SP_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY
-  const runFW  = !SKIP_FW && !WD_ONLY && !LF_ONLY && !SP_ONLY && !DG_ONLY && !AP_ONLY && !ART_ONLY
-  const runAP  = !SKIP_AP && !ART_ONLY
-  const runART = true
+  const ONLY_OTHER = WD_ONLY || LF_ONLY || SP_ONLY || DG_ONLY || FW_ONLY || AP_ONLY || ART_ONLY
+  const runMB = !ONLY_OTHER && !INTEREST_ONLY
+  const runWD = !SKIP_WD && !LF_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY && !INTEREST_ONLY
+  const runLF = !SKIP_LF && !WD_ONLY && !SP_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY && !INTEREST_ONLY
+  const runSP = !SKIP_SP && !WD_ONLY && !LF_ONLY && !DG_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY && !INTEREST_ONLY
+  const runDG  = !SKIP_DG && !WD_ONLY && !LF_ONLY && !SP_ONLY && !FW_ONLY && !AP_ONLY && !ART_ONLY && !INTEREST_ONLY
+  const runFW  = !SKIP_FW && !WD_ONLY && !LF_ONLY && !SP_ONLY && !DG_ONLY && !AP_ONLY && !ART_ONLY && !INTEREST_ONLY
+  const runAP  = !SKIP_AP && !ART_ONLY && !INTEREST_ONLY
+  const runART = !INTEREST_ONLY
+  // Interest score (Fase 2): per ultimo, consuma quality_score/tags/track_listeners finali.
+  const runINT = INTEREST_ONLY || (!SKIP_INTEREST && !ONLY_OTHER)
 
   if (WD_ONLY)  console.log('\n(--wikidata-only: salto MusicBrainz, Last.fm, Spotify, Discogs, Folkways e Apple)')
   if (LF_ONLY)  console.log('\n(--lastfm-only: salto MusicBrainz, Wikidata, Spotify, Discogs, Folkways e Apple)')
@@ -2179,6 +2288,10 @@ async function main() {
   // Artwork backfill: recupera artwork_url per le tracce con apple_music_id ma senza artwork.
   // Gira dopo il matching così copre anche i nuovi match.
   if (runART) await runArtworkStage()
+
+  // Interest score (Fase 2): ricalcola il segnale globale dopo che tutti gli stage
+  // hanno finalizzato quality_score, tag e track_listeners.
+  if (runINT) await runInterestStage()
 
   await logSummary()
   saveCheckpoint(cp)

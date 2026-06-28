@@ -40,6 +40,7 @@ create table if not exists tracks (
   tags                text[] not null default '{}',
   weight              integer not null default 1,            -- legacy: peso artista (compresso)
   quality_score       double precision,                      -- segnale di pesca per-brano (de-compresso)
+  interest_score      double precision,                      -- Fase 2: interesse globale precalcolato (qualità+gem+distintività)
   track_listeners     bigint,                                -- segnale Last.fm per-brano (track.getInfo, opzionale)
   rand                double precision not null default random(),  -- chiave per campionamento profondo
   created_at          timestamptz not null default now()
@@ -51,6 +52,11 @@ create index if not exists tracks_year_idx       on tracks (year);
 create index if not exists tracks_weight_idx     on tracks (weight);
 create index if not exists tracks_quality_idx    on tracks (quality_score);
 create index if not exists tracks_rand_idx       on tracks (rand);
+-- Composite indexes for the discovery draw: it filters by macro_area and scans a
+-- random window via rand, so (macro_area, rand) turns the hot path into an
+-- index-range scan instead of a filter-then-sort.
+create index if not exists tracks_area_rand_idx      on tracks (macro_area, rand);
+create index if not exists tracks_area_year_rand_idx on tracks (macro_area, year, rand);
 
 -- ── Migrazioni per installazioni esistenti (idempotenti) ─────────────────────
 -- `create table if not exists` non aggiunge colonne a una tabella già presente:
@@ -60,13 +66,16 @@ alter table artists add column if not exists playcount       bigint;
 alter table tracks  add column if not exists apple_music_id   text;
 alter table tracks  add column if not exists is_new_release   boolean not null default false;
 alter table tracks  add column if not exists quality_score    double precision;
+alter table tracks  add column if not exists interest_score   double precision;
 alter table tracks  add column if not exists track_listeners  bigint;
 alter table tracks  add column if not exists rand             double precision;
 update tracks set rand = random() where rand is null;
 alter table tracks  alter column rand set default random();
 alter table tracks  alter column rand set not null;
-create index if not exists tracks_quality_idx on tracks (quality_score);
-create index if not exists tracks_rand_idx    on tracks (rand);
+create index if not exists tracks_quality_idx        on tracks (quality_score);
+create index if not exists tracks_rand_idx           on tracks (rand);
+create index if not exists tracks_area_rand_idx      on tracks (macro_area, rand);
+create index if not exists tracks_area_year_rand_idx on tracks (macro_area, year, rand);
 
 -- ── Match reports ──────────────────────────────────────────────────────────
 create table if not exists match_reports (

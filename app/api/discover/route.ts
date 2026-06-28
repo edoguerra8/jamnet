@@ -2,12 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient } from '@/lib/supabase'
 import { Track, FlowMode } from '@/lib/types'
 import { dbRowToTrack, TRACK_COLUMNS } from '@/lib/tracks'
+import { selectBatch, DiscoveryRow } from '@/lib/discovery'
 
 const BATCH_SIZE = 30
 const POOL_SIZE = 300       // random window into catalog depth, sampled in JS
-const VARIETY_WINDOW = 8    // last N tracks used for tag-diversity check
-const VARIETY_ATTEMPTS = 6  // attempts before relaxing the constraint
-const RAMP_LENGTH = 15      // session depth over which anchors → surprises
+const VARIETY_WINDOW = 8    // last N tracks fed in from the session for continuity
 
 // Adjacent macro-areas for Course mode — biased toward nearby regions
 const ADJACENT: Record<string, string[]> = {
@@ -26,12 +25,6 @@ const ADJACENT: Record<string, string[]> = {
 
 function isWhirl(mode: FlowMode) {
   return mode === 'whirl' || mode === 'vortice'
-}
-
-// Returns true if the candidate track shares at least one tag with the session window.
-function overlapsWindow(candidateTags: string[], windowTags: Set<string>): boolean {
-  if (windowTags.size === 0) return false
-  return candidateTags.some(t => windowTags.has(t))
 }
 
 const ALL_DECADES = [1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020]
@@ -61,16 +54,18 @@ export async function POST(req: NextRequest) {
     const country: string | null    = typeof body.country === 'string' && body.country ? body.country : null
     const artistMbId: string | null = typeof body.artistMbId === 'string' && body.artistMbId ? body.artistMbId : null
     const artistName: string | null = typeof body.artistName === 'string' && body.artistName ? body.artistName : null
-    const exclude: string[] = Array.isArray(body.exclude) ? body.exclude.slice(-400) : []
+    // Only keep well-formed UUIDs in the exclude set — these are interpolated into
+    // a PostgREST filter string below, so unvalidated input must not reach it.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const exclude: string[] = (Array.isArray(body.exclude) ? body.exclude : [])
+      .filter((id: unknown): id is string => typeof id === 'string' && UUID_RE.test(id))
+      .slice(-400)
     const mode: FlowMode    = (['whirl','vortice'].includes(body.mode)) ? body.mode : 'course'
     const currentArea: string | null = body.currentArea || null
     const sessionDepth: number = Number(body.sessionDepth) || 0
+    const debug = Boolean(body.debug)
 
-    // Variety window: tags from the last VARIETY_WINDOW tracks in session
-    const sessionTagsList: string[][] = Array.isArray(body.sessionTags) ? body.sessionTags : []
-    const windowTags = new Set<string>(
-      sessionTagsList.slice(-VARIETY_WINDOW).flat()
-    )
+    const sessionTags: string[][] = Array.isArray(body.sessionTags) ? body.sessionTags : []
 
     const sb = createServiceClient()
 
@@ -141,68 +136,29 @@ export async function POST(req: NextRequest) {
     const pivot = Math.random()
     const primary = await buildBaseQuery()
       .gte('rand', pivot).order('rand', { ascending: true }).limit(POOL_SIZE)
-    let pool: Record<string, unknown>[] = (primary.data as Record<string, unknown>[]) ?? []
+    let pool: DiscoveryRow[] = (primary.data as DiscoveryRow[]) ?? []
 
     if (!primary.error && pool.length < POOL_SIZE) {
       const wrap = await buildBaseQuery()
         .lt('rand', pivot).order('rand', { ascending: true }).limit(POOL_SIZE - pool.length)
-      pool = pool.concat((wrap.data as Record<string, unknown>[]) ?? [])
+      pool = pool.concat((wrap.data as DiscoveryRow[]) ?? [])
     }
 
     if (primary.error || pool.length === 0) {
       return NextResponse.json({ tracks: [] })
     }
 
-    // Explore/exploit ramp: early in a session, sharpen toward high-quality,
-    // recognizable anchors (expo > 1); deeper in, flatten so the long tail of
-    // good-but-obscure gems gets real probability (expo < 1). Whirl starts near
-    // the surprise regime. Depends only on session position — never on user id.
-    let t = Math.max(0, Math.min(1, sessionDepth / RAMP_LENGTH))
-    if (isWhirl(mode)) t = Math.max(t, 0.7)
-    const expo = 2 - 1.4 * t
+    // Diversity-aware, interest-weighted selection (pure, testable: lib/discovery).
+    const { picked, debug: dbg } = selectBatch(pool, {
+      sessionDepth,
+      isWhirl: isWhirl(mode),
+      sessionTags: sessionTags.slice(-VARIETY_WINDOW),
+      batchSize: BATCH_SIZE,
+    })
 
-    function baseScore(r: Record<string, unknown>): number {
-      return Number(r.quality_score) || Number(r.weight) || 1
-    }
+    const tracks: Track[] = picked.map(r => dbRowToTrack(r as unknown as Record<string, unknown>))
 
-    // Weighted sampling with variety check
-    const picked: Record<string, unknown>[] = []
-    const remaining = [...pool]
-
-    function weightedPick(candidates: Record<string, unknown>[]): number {
-      const totalWeight = candidates.reduce((sum, r) => sum + Math.pow(baseScore(r), expo), 0)
-      let rnd = Math.random() * totalWeight
-      for (let i = 0; i < candidates.length; i++) {
-        rnd -= Math.pow(baseScore(candidates[i]), expo)
-        if (rnd <= 0) return i
-      }
-      return candidates.length - 1
-    }
-
-    while (picked.length < BATCH_SIZE && remaining.length > 0) {
-      let found = false
-      // Try up to VARIETY_ATTEMPTS times to find a tag-diverse candidate
-      for (let attempt = 0; attempt < VARIETY_ATTEMPTS && remaining.length > 0; attempt++) {
-        const idx = weightedPick(remaining)
-        const candidate = remaining[idx]
-        const candidateTags = (candidate.tags as string[]) || []
-
-        if (!overlapsWindow(candidateTags, windowTags) || attempt === VARIETY_ATTEMPTS - 1) {
-          picked.push(candidate)
-          remaining.splice(idx, 1)
-          // Extend the variety window with this pick's tags
-          candidateTags.forEach(t => windowTags.add(t))
-          found = true
-          break
-        }
-        // Move the candidate to the end and try again (simple rotation)
-        remaining.splice(idx, 1)
-        remaining.push(candidate)
-      }
-      if (!found) break
-    }
-
-    const tracks: Track[] = picked.map(dbRowToTrack)
+    if (debug) return NextResponse.json({ tracks, debug: dbg })
     return NextResponse.json({ tracks })
 
   } catch (e) {

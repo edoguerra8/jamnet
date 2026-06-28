@@ -16,7 +16,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'JamNet',
-  description: 'Discover music from everywhere, every era.',
+  description: 'Drop the needle anywhere in the world. Discover music from everywhere, every era.',
 }
 
 export const viewport: Viewport = {
